@@ -22,7 +22,7 @@ pixThr = findPixelThreshold(lsdttTableTestClip, thresholdRange = np.arange(1,26)
 getLSDTTFlowlines(fname = "debrisBasins", path = path, lsdttPath = lsdttPath, m_over_n= 0.4, writeCSV=True)  
 lsdttTableDebrisSamples = mergeLSDTToutput(fname = "debrisBasins", path = path, resolution=3, epsg = 32719)   
 #use debris-flow sample regions to get a good slope-change threshold to constrain CCs  
-dSlopeThr = findDSlopeThreshold(lsdttTableDebrisSamples, pixThr = 7, thresholdRange = np.arange(0.15,0.31,0.01))
+dSlopeThr = findDSlopeThreshold(lsdttTableDebrisSamples, pixThr = pixThr)
 
 #run CC Analysis with optimal parameters for both channel networks
 runCCAnalysis(fname = "testClip", path = path, lsdttTable = lsdttTableTestClip, pixThr = pixThr, dSlopeThr = dSlopeThr)

@@ -596,7 +596,7 @@ def findDSlopeThreshold(lsdttTable, pixThr = 10, bridge = 5, thresholdRange = np
         csv.columns = ["Threshold", "TotalNrStreams", "SingleCCStreams"]
         csv.to_csv("numberOfSingleCCStreams_variousSlopeChangeThresholds.csv", index = False)
         
-    return(optThr)
+    return(np.round(optThr),2)
 
 #####################################################################################################################
 
@@ -671,11 +671,13 @@ def assignDFSI(path, allCCName, debrisName, pixThr = 0.23, dSlopeThr = 0.23, bri
     #load debris samples
     print("I am going to use "+debrisName+"_ConnectedComponents_"+str(pixThr)+"_"+str(np.round(dSlopeThr,2))+"_"+str(bridge)+".csv as debris-flow samples.")
     deb = pd.read_csv(path+debrisName+"_ConnectedComponents_"+str(pixThr)+"_"+str(np.round(dSlopeThr,2))+"_"+str(bridge)+".csv")
-    
+    #remove single pixel CCs
+    deb = deb.loc[deb['ccLength'] >0].reset_index(drop = True)
     #load all CCs
     print("I am going to assign debris-flow similarity values to all CCs in"+ allCCName+"_ConnectedComponents_"+str(pixThr)+"_"+str(np.round(dSlopeThr,2))+"_"+str(bridge)+".csv")
     cc =  pd.read_csv(path+allCCName+"_ConnectedComponents_"+str(pixThr)+"_"+str(np.round(dSlopeThr,2))+"_"+str(bridge)+".csv")
-    
+    #remove single pixel CCs
+    cc = cc.loc[cc['ccLength'] >0].reset_index(drop = True)
     # logtransform and normalize data
     deb["ccLengthNorm"] = normalize(np.log(deb.ccLength))
     deb["ccMeanSlopeNorm"] = normalize(deb.ccMeanSlope)
