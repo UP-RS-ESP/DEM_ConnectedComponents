@@ -8,6 +8,7 @@ Created on Fri Mar 26 12:59:37 2021
 
 
 import pandas as pd
+from tqdm import tqdm
 import numpy as np
 import geopandas as gpd
 import os, sys
@@ -20,12 +21,12 @@ from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
 import seaborn as sns
 
-pd.set_option('mode.chained_assignment', None) #turn off annoying set copy warnings
+pd.set_option('mode.chained_assignment', None)
 
 #####################################################################################################################
 
 def getLSDTTFlowlines(fname,path, lsdttPath = "~/LSDTopoTools/LSDTopoTools2/LSDTopoTools/LSDTopoTools2/bin/", minContributingPixels = 1000, maxBasinSize = 11111111,findCompleteBasins = "false", testBoundaries = "false", m_over_n = 0.45):
-    #this function converts your input geotiff to ENVI format, creates a driver file and runs lsdtt-chi mapping to extract channels
+    #this function converts the input geotiff to ENVI format, creates a driver file and runs lsdtt-chi mapping to extract channels
    
     #change geotiff to bil format for lsdtt
     
@@ -100,7 +101,7 @@ def toUTM(df, epsg):
 #####################################################################################################################
 
 def mergeLSDTToutput(fname, path, resolution, epsg):
-    #combines _MChiSegmented file with the reciever nodes from the _CN file to know which stream pixel comes next
+    #function combines _MChiSegmented file with the reciever nodes from the _CN file to know which stream pixel comes next
     print("Merging CSV files from LSDTopoTools...")
     #load chi segmented channels from LSDTT
     lsdttTable = pd.read_csv(path+fname+"_MChiSegmented.csv")
@@ -109,9 +110,10 @@ def mergeLSDTToutput(fname, path, resolution, epsg):
     # get coorndinates
     coords = [(x,y) for x, y in zip(lsdttTable.x, lsdttTable.y)]
     
-    #now we need to combine the invormation from the _MChiSegmented.csv file with the _CN.csv file because I need the reciever nodes to properly walk downstream
-    #convert channel data to shape and rasterize that so we can extract reciever node
-    #spatial join does not work, bc points are slightly offset (I am upset)
+    #the information from the _MChiSegmented.csv file with the _CN.csv file needs to be combined because the reciever nodes (stored in the _CN file)
+    #need to be retrieved in order to properly walk downstream.
+    #this is done by converting the channel data to a shapefile and rasterize it so that the reciever nodes can be extracted
+    #spatial join does not work, because points are slightly offset
     
     #CSV to shapefile because gdal_rasterize didnt like the csv format
     ogr2ogr = "ogr2ogr -s_srs EPSG:4326 -t_srs EPSG:32719 -oo X_POSSIBLE_nameS=lon* -oo Y_POSSIBLE_nameS=lat*  -f \"ESRI Shapefile\" "+path+fname+"_CN.shp "+path+fname+"_CN.csv"  
@@ -129,15 +131,17 @@ def mergeLSDTToutput(fname, path, resolution, epsg):
 #####################################################################################################################
  
 def processBasin(basin, lsdttTable, heads, pixThr, dSlopeThr, bridge):    
-    #Calculates channel slope and connected components for individual catchments
+    #function calculates channel slope and connected components for individual catchments
+    
+    #empty dataframe for storing output
     df = pd.DataFrame(columns = ["X","Y","StreamID","BasinID", "Elevation", "DrainageArea", "XYDistanceToNextPixel", "DownstreamDistance", "3DDistanceToNextPixel",  "Slope", "R2", "ksn", "ccID", "segmentLocation", "dSlopeToPrevSegment"])
        
-    print("Processing basin "+str(basin+1)+"/"+str(heads["basin_key"].nunique()))
+    #print("Processing basin "+str(basin+1)+"/"+str(heads["basin_key"].nunique()))
     #subset channel heads by catchment
     bheads = heads.loc[(heads.basin_key == basin)].reset_index(drop = True)
     for ii, currentNode in enumerate(bheads.node):
-        #st = cat.loc[(cat.StreamID == stream)]
-        print("Processing channelhead "+str(ii+1)+"/"+str(len(bheads)))
+
+        #print("Processing channelhead "+str(ii+1)+"/"+str(len(bheads)))
         nextNode = bheads.RNI[ii]
         
         #set parameters for CC extraction
@@ -154,20 +158,20 @@ def processBasin(basin, lsdttTable, heads, pixThr, dSlopeThr, bridge):
         dsDist[:] = np.nan
             
         #empty array for storing data
-        data = np.zeros([60000,12]) #if you have really really long channels (> 60000 pixels), you might run into trouble here
+        data = np.zeros([60000,12]) #if there are really really long channels (> 60000 pixels), this array needs to be expanded
         data[:] = np.nan
         j=0
             
         #start going down a channel
-        #do so while the current node is not the next node (happens at channel outlet) and there is still space in your array
+        #do so while the current node is not the next node (happens at channel outlet) and there is still space in the array
         while(currentNode != nextNode and j < len(data)):
 
             #identify data at current and next node
             crrnt = lsdttTable.loc[np.where(lsdttTable.node == currentNode)]
             nxt = lsdttTable.loc[np.where(lsdttTable.node == nextNode)]
             
-            #if I subset the lsdttTablecsv table to only get pixels below a certain DA threshold, the next Node might not be present.
-            #in this case, I set the next node to the current node in order for the while loop to break
+            #break the loop if a next Node is not available
+            #this might happen, if the lsdttTable is subsetted
             if nxt.empty:
                 currentNode = nextNode
             else:
@@ -179,7 +183,7 @@ def processBasin(basin, lsdttTable, heads, pixThr, dSlopeThr, bridge):
                 
     
                 #dynamic elevation and dsDist array to compute regression from
-                #I start filling in at the beginning and remove values at the end
+                #start filling in at the beginning and remove values at the end
                 elev = np.insert(elev, 0, crrnt.elevation.iloc[0]) #add current elevation
                 elev = np.delete(elev, 2*pixThr+1) #remove last
                 
@@ -187,7 +191,7 @@ def processBasin(basin, lsdttTable, heads, pixThr, dSlopeThr, bridge):
                 dsDist = np.insert(dsDist, 0, distXY)
                 dsDist = np.delete(dsDist, 2*pixThr+1)
     
-                #now store some data in my array
+                #now store some data in the empty array
                 data[j,0]= crrnt.x.iloc[0] #x coordinate
                 data[j,1]= crrnt.y.iloc[0] #y coordinate
                 data[j,2] = crrnt.elevation.iloc[0] #elevation
@@ -201,14 +205,13 @@ def processBasin(basin, lsdttTable, heads, pixThr, dSlopeThr, bridge):
                 nextNode = lsdttTable.loc[np.where(lsdttTable.node == currentNode)].RNI.iloc[0]
                 
                 #if the current combination of X and Y coordinates is already in the output dataframe, increase the duplication counter
-                #because slope and cc calculation are lagging I need to continue at least j+pixThr+bridge rounds until I can terminate
-                #the entire channel investigation when a CC terminates
+                #because slope and cc calculation are lagging, slope calculation needs to continue at least j+pixThr+bridge rounds until it can terminate
                 if((df[['X','Y']].values == [data[j,0], data[j,1]]).all(axis=1).any()):
                     dupCounter +=1
      
                 ######################################
                 #calculate slope running stream
-                if(j>=pixThr): #when we have reached a significant amount of pixels (=pixelThreshold),start computing channel slope
+                if(j>=pixThr): #when a significant amount of pixels (=pixelThreshold) is reached, start computing channel slope
                     #compute regression
                     #print("Calculating slope for point "+str(j-pixThr))
                     #remove nan if still present
@@ -224,11 +227,12 @@ def processBasin(basin, lsdttTable, heads, pixThr, dSlopeThr, bridge):
                 
                 ######################################
                 #define connected components running stream
-                if(j>=pixThr+bridge): #for connected components we need to start investigating the connectivity
-                 #of two pixels even later to make sure we already know the channel slope and can bridge outliers
+                if(j>=pixThr+bridge): #for connected components, the connectivity
+                 #of two pixels needs to be investigated even later to make sure the channel slope is already known 
+                 #by the desired amount of channel pixels that are allowed to be bridged in advance
                     slopeInvestigated = data[j-pixThr-bridge,7]
                     #print("Assess connectivity of point "+str(j-pixThr-bridge))
-                    if(j == pixThr+bridge): #if we look at the first pixel for which we calculated slope, we cannot compare it to any previous ones                       
+                    if(j == pixThr+bridge): #the first pixel for which slope is calculated cannot be compared to any previous ones                       
                         #add slope to mean cc slope df
                         mList.append(slopeInvestigated) #append current slope
                         mean = np.mean(mList) #calculate mean
@@ -240,27 +244,26 @@ def processBasin(basin, lsdttTable, heads, pixThr, dSlopeThr, bridge):
                     else: 
                         if(abs(mean-slopeInvestigated)<=dSlopeThr): #if Slope of current pixel is smaller than the mean of the current connected segment
                             data[j-pixThr-bridge, 9]= ccID #assign the same ccID
-                            data[j-pixThr-bridge, 10]=segmentLocationcount
+                            data[j-pixThr-bridge, 10]=segmentLocationcount #assign segment location
                   
                             mList.append(slopeInvestigated) #add Slope to Slope list and compute mean
                             mean = np.mean(mList)
                             
                         #bridge outliers, these wont be added to the mean list
                         elif(np.any(abs(mean-data[j-pixThr-bridge+1:j-pixThr+1,7])<=dSlopeThr)): #if Slope of current pixel is smaller than the mean of the current connected segment, but up to 5 pixels downstream the slope is still within threshold bounds
-                            #print(data[j-pixThr-bridge:j-pixThr,7])
+
                             data[j-pixThr-bridge, 9] = ccID
                             data[j-pixThr-bridge, 10]=segmentLocationcount
                             
                         else: #terminate segment
                         
                             #calculate slope change with regard to previous CC
-                            try: #if the list is still empty we will get an index error
+                            try: 
                                 data[np.where(data[:,9]==ccID),11]= previousSlps[-1]-mean
-                            except IndexError: #if list previousSlps is empty, you will get an index error
+                            except IndexError: #if list previousSlps is empty, it will raise an index error
                                 pass
                             
-                            #if we are already past a junction, we can finish the calculation to not get any duplicated CCs
-                            #and we dont even need to finish calculating the terminal slopes and CCs
+                            #if the algorithm is past a junction, the calculation is terminated to not get any duplicated CCs
                             if(dupCounter>=pixThr+bridge):
                                 break
                             
@@ -271,7 +274,7 @@ def processBasin(basin, lsdttTable, heads, pixThr, dSlopeThr, bridge):
                             mList.append(slopeInvestigated)
                             previousSlps.append(mean) #append previous Slope values to list to be able to compare them later on
                             mean = np.mean(mList)
-                            if(segmentLocationcount == 1): #increase segmentLocationcount to two if we are after the first segment
+                            if(segmentLocationcount == 1): #increase segmentLocationcount to two if there already is a first segment
                                 segmentLocationcount = 2
                             data[j-pixThr-bridge, 10]=segmentLocationcount
 
@@ -295,13 +298,14 @@ def processBasin(basin, lsdttTable, heads, pixThr, dSlopeThr, bridge):
                     # plt.scatter(np.cumsum(dsDist[mask]),elev[mask], color = "gray")
                     # plt.hlines(data[k,2], 0 ,40)
                     # plt.show()
+                    
                 #########################################
                 #finish calculating CCs
                 for k in range(j-pixThr-bridge, j, 1):
 
                     slopeInvestigated = data[k,7]
-                    #of two pixels even later to make sure we already know the channel slope and can bridge outliers
-                    if(k == 0): #if we look at the first pixel for which we calculated slope, we cannot compare it to any previous ones                       
+
+                    if(k == 0): #first pixel cannot be compared to other ones                     
                         #add slope to mean cc slope df
                         mList.append(slopeInvestigated) #append current slope
                         mean = np.mean(mList) #calculate mean
@@ -312,7 +316,7 @@ def processBasin(basin, lsdttTable, heads, pixThr, dSlopeThr, bridge):
                     else: 
                         #look five pixels ahead to see if there are any slopes that match the mean so that a CC would be bridged
                         futureLook = data[k+1:k+1+bridge,7]
-                        #mask so that I dont get a runtime error
+                        #mask to avoid runtime error
                         futureLook = futureLook[~np.isnan(futureLook)]
 
                         if(abs(mean-slopeInvestigated)<=dSlopeThr): #if Slope of current pixel is smaller than the mean of the current connected segment
@@ -322,27 +326,25 @@ def processBasin(basin, lsdttTable, heads, pixThr, dSlopeThr, bridge):
                             mList.append(slopeInvestigated) #add Slope to Slope list and compute mean
                             mean = np.mean(mList)
                             
-                            #if the stream ends naturally, we also need to termiante the CC (only thing missing is calculating the dPrevSLp)
+                            #if the stream ends naturally, the CC needs to be terminated as well (only thing missing is calculating the dPrevSLp)
                             if(k == j):
                                 try:
                                     data[np.where(data[:,9]==ccID),11]= previousSlps[-1]-mean
-                                except IndexError: #if list previousSlps is empty, you will get an index error
+                                except IndexError: #if list previousSlps is empty, it will result in an index error
                                     pass
-                        #bridge outliers, these wont be added to the mean list
-                        #here it might happen that we land outside of the array if we look 5 pixels in the future, so we get a runtime warning - thus I have to remove nan
-                            
+                                
+                        #bridge outliers, these wont be added to the mean list  
                         elif(np.any(abs(mean-futureLook)<=dSlopeThr)): 
                             
                             #if Slope of current pixel is smaller than the mean of the current connected segment, but up to 5 pixels downstream the slope is still within threshold bounds
-                            #here it might happen that we land outside of the array if we look 5 pixels in the future, so we get a runtime warning - can be ignored
                             data[k, 9] = ccID
                             data[k, 10]=segmentLocationcount
                             
                         else: #terminate segment
                             #calculate slope change with regard to previous CC
-                            try: #if the list is still empty we will get an index error
+                            try: 
                                 data[np.where(data[:,9]==ccID),11]= previousSlps[-1]-mean
-                            except IndexError: #if list previousSlps is empty, you will get an index error
+                            except IndexError: #if list previousSlps is empty, it will result in an index error -> except
                                 pass
                             ccID+=1 #increase CCID
                             data[k, 9] = ccID #assign new ccID
@@ -351,20 +353,19 @@ def processBasin(basin, lsdttTable, heads, pixThr, dSlopeThr, bridge):
                             mList.append(slopeInvestigated)
                             previousSlps.append(mean) #append previous Slope values to list to be able to compare them later on
                             mean = np.mean(mList)
-                            if(segmentLocationcount == 1): #increase segmentLocationcount to two if we are after the first segment
+                            if(segmentLocationcount == 1): #increase segmentLocationcount to two if a first segment already exists
                                 segmentLocationcount = 2
                             data[k, 10]=segmentLocationcount                 
     
             j+=1
         
-        #when we are finished, we still need to assign the correct segment location: 
-        #if we have reached the terminal pixel of a stream    
+        #finish assigning the correct segment location: 
+        #if the terminal pixel of a stream is reached 
         #and the segment location is still = 1
         #the entire stream is still one CC and needs to be assigned the value 4
-        #and I am just lazy and set the entire column to 4, because the spare values will be immediatly removed in the next step
         if(segmentLocationcount == 1 and currentNode == nextNode):
             data[:,10]=4
-        # else if we do have middle segments and do come to a natural end, set the segemtn Locations of the last CC to 3    
+        # else if there are no middle segments and the steam does come to a natural end, set the segemten Locations of the last CC to 3    
         elif(segmentLocationcount == 2 and currentNode == nextNode):
             data[np.where(data[:,9]==ccID),10]=3
             
@@ -381,14 +382,14 @@ def processBasin(basin, lsdttTable, heads, pixThr, dSlopeThr, bridge):
 #####################################################################################################################
 
 def processBasinWithoutCCs(basin, lsdttTable, heads, pixThr):    
-    #Calculates channel slope for given basin
+    #function calculates channel slope for given basin
     #main purpose is to find a suitable pixel threshold
     df = pd.DataFrame(columns = ["X","Y","StreamID","BasinID", "Elevation", "DrainageArea", "XYDistanceToNextPixel", "DownstreamDistance", "3DDistanceToNextPixel","ksn" ,"Slope", "R2", "SlopeChange"])
        
     #subset channel heads by catchment
     bheads = heads.loc[(heads.basin_key == basin)].reset_index(drop = True)
     for ii, currentNode in enumerate(bheads.node):
-        #st = cat.loc[(cat.StreamID == stream)]
+
         #print("Processing channelhead "+str(ii+1)+"/"+str(len(bheads)))
         nextNode = bheads.RNI[ii]
         
@@ -401,20 +402,20 @@ def processBasinWithoutCCs(basin, lsdttTable, heads, pixThr):
         dsDist[:] = np.nan
             
         #empty array for storing data
-        data = np.zeros([60000,9]) #if you have really really long channels (> 60000 pixels), you might run into trouble here
+        data = np.zeros([60000,9]) #if there are really really long channels (> 60000 pixels), the array might need to be extended
         data[:] = np.nan
         j=0
             
         #start going down a channel
-        #do so while the current node is not the next node (happens at channel outlet) and there is still space in your array
+        #do so while the current node is not the next node (happens at channel outlet) and there is still space in the array
         while(currentNode != nextNode and j < len(data)):
 
             #identify data at current and next node
             crrnt = lsdttTable.loc[np.where(lsdttTable.node == currentNode)]
             nxt = lsdttTable.loc[np.where(lsdttTable.node == nextNode)]
             
-            #if I subset the lsdttTablecsv table to only get pixels below a certain DA threshold, the next Node might not be present.
-            #in this case, I set the next node to the current node in order for the while loop to break
+            #break the loop if a next Node is not available
+            #this might happen, if the lsdttTable is subsetted
             if nxt.empty:
                 currentNode = nextNode
             else:
@@ -424,9 +425,8 @@ def processBasinWithoutCCs(basin, lsdttTable, heads, pixThr):
                 #3D distance
                 dist3D = np.sqrt((crrnt.x.iloc[0]-nxt.x.iloc[0])**2+(crrnt.y.iloc[0]-nxt.y.iloc[0])**2+(crrnt.elevation.iloc[0]-nxt.elevation.iloc[0]))
                 
-    
                 #dynamic elevation and dsDist array to compute regression from
-                #I start filling in at the beginning and remove values at the end
+                #start filling in at the beginning and remove values at the end
                 elev = np.insert(elev, 0, crrnt.elevation.iloc[0]) #add current elevation
                 elev = np.delete(elev, 2*pixThr+1) #remove last
                 
@@ -448,14 +448,15 @@ def processBasinWithoutCCs(basin, lsdttTable, heads, pixThr):
                 nextNode = lsdttTable.loc[np.where(lsdttTable.node == currentNode)].RNI.iloc[0]
                 
                 #if the current combination of X and Y coordinates is already in the output dataframe, increase duplication counter
-                #we need to continue pixThr many pixels after an intersection to finish calculating the slope
+                #calculations need to continue pixThr many pixels after an intersection to finish calculating the slope
                 if((df[['X','Y']].values == [data[j,0], data[j,1]]).all(axis=1).any()):
                     dupCounter += 1
-                    if(dupCounter >= pixThr): # if we have reached x pixels after intersection, set nextNode to Current Node to stop
+                    if(dupCounter >= 2*pixThr): # if a full regression length after the intersection is reached (to make sure that all unique slope values are counted), 
+                    #set nextNode to Current Node to stop
                         nextNode = currentNode    
                 ######################################
-                #calculate slope running stream
-                if(j>=pixThr): #when we have reached a significant amount of pixels (=pixelThreshold),start computing channel slope
+                #calculate slope for the running stream
+                if(j>=pixThr): #when a significant amount of pixels (=pixelThreshold) is reached, start computing channel slope
                     #compute regression
                     #print("Calculating slope for point "+str(j-pixThr))
                     #remove nan if still present
@@ -463,7 +464,7 @@ def processBasinWithoutCCs(basin, lsdttTable, heads, pixThr):
                     reg = linregress(np.cumsum(dsDist[mask]),elev[mask])
                     data[j-pixThr,7] = abs(reg[0]) #slope
                     data[j-pixThr,8] = reg[2] #R2
-                    
+
         
             ##########################################
             #calculate slope at end of stream                                                                                                                        
@@ -479,11 +480,11 @@ def processBasinWithoutCCs(basin, lsdttTable, heads, pixThr):
                     reg = linregress(np.cumsum(dsDist[mask]),elev[mask])
                     data[k,7] = abs(reg[0]) #slope
                     data[k,8] = reg[2] #R2
-    
+        
             j+=1
         
 
-        data = data[~np.isnan(data[:, 0])] #remove spare space in array
+        data = data[~np.isnan(data[:, 7])] #remove spare space in array
 
         #convert array to pandas df
         df = pd.concat([df, pd.DataFrame({"X": data[:,0], "Y": data[:,1],"StreamID":ii, "BasinID":basin, "Elevation": data[:,2], 
@@ -501,12 +502,12 @@ def runCCAnalysis(fname, path, lsdttTable, pixThr = 10, dSlopeThr = 0.23, bridge
     heads = lsdttTable[~lsdttTable.node.isin(lsdttTable.RNI)].reset_index(drop=True)
     
     #now get all basins
-    print("I found "+str(heads["basin_key"].nunique())+" catchments.")
+    #print("I found "+str(heads["basin_key"].nunique())+" catchments.")
 
     #loop over all basins in csv file and give each task to a different core
     #pass tasks
     with concurrent.futures.ProcessPoolExecutor() as executor:
-        results = [executor.submit(processBasin, basin = basin , lsdttTable = lsdttTable, heads = heads, pixThr = pixThr, dSlopeThr = dSlopeThr, bridge = bridge) for basin in heads.basin_key.unique()]
+        results = [executor.submit(processBasin, basin = basin , lsdttTable = lsdttTable, heads = heads, pixThr = pixThr, dSlopeThr = dSlopeThr, bridge = bridge) for basin in tqdm(heads.basin_key.unique(), desc = "Processing "+str(heads["basin_key"].nunique())+" catchments.")]
     
     #combine results
     out = pd.DataFrame(columns = ["X","Y","StreamID","BasinID", "Elevation", "DrainageArea", "XYDistanceToNextPixel", "DownstreamDistance", "3DDistanceToNextPixel",  "Slope", "R2", "ksn", "ccID", "segmentLocation", "dSlopeToPrevSegment"])
@@ -534,7 +535,7 @@ def runCCAnalysis(fname, path, lsdttTable, pixThr = 10, dSlopeThr = 0.23, bridge
 
 #####################################################################################################################    
 
-def findDSlopeThreshold(lsdttTable, pixThr = 10, bridge = 5, thresholdRange = np.arange(0.05,0.31,0.01)):
+def findDSlopeThreshold(lsdttTable, pixThr = 10, bridge = 5, thresholdRange = np.round(np.arange(0.05,0.31,0.01),2)):
     #similar to runCCAnalysis Script. Process is repeated for different thresholds and output CCs are compared 
     #lsdttTable of debris flow sample regions should be provided
     
@@ -545,8 +546,8 @@ def findDSlopeThreshold(lsdttTable, pixThr = 10, bridge = 5, thresholdRange = np
     #empty array for storing data
     data = np.zeros([len(thresholdRange),3]) 
     
-    for ii, thr in enumerate(thresholdRange):
-        print("Testing a threshold of "+str(thr)+"...")
+    for ii, thr in enumerate(tqdm(thresholdRange, desc = "Finding connected components using different slope-change thresholds")):
+        #print("Testing a threshold of "+str(thr)+"...")
         
         #pass tasks
         with concurrent.futures.ProcessPoolExecutor() as executor:
@@ -599,18 +600,22 @@ def findPixelThreshold(lsdttTable, thresholdRange = np.arange(1,26), sampleBasin
     #empty array for storing data
     data = np.zeros([len(thresholdRange),4]) 
     
+    #subset lsdttTable by basin (if desired) to speed up processing
     if sampleBasinID >= 0:
-        print("Subsetting the input to only sample streams from basin nr. "+str(sampleBasinID)+".")
-        lsdttTable = lsdttTable.loc[np.where(lsdttTable.basin_key == sampleBasinID)]
-        
+        #print("Subsetting the input to only sample streams from basin nr. "+str(sampleBasinID)+".")
+        lsdttTable = lsdttTable.loc[np.where(lsdttTable.basin_key == sampleBasinID)].reset_index(drop=True)
+    
+    #get channelheads    
     heads = lsdttTable[~lsdttTable.node.isin(lsdttTable.RNI)].reset_index(drop=True)
     
+    #get a random subset of x channelheads to speed up processing (if desired)
     if sampleStreams > 0:
-        print("Subsetting the input and sampling "+str(sampleStreams)+" random streams.")
+        #print("Subsetting the input and sampling "+str(sampleStreams)+" random streams.")
         heads = heads.sample(n = sampleStreams).reset_index(drop = True)
     
-    for ii, thr in enumerate(thresholdRange):
-        print("Testing a threshold of ±"+str(thr)+ " pixel(s).")
+    #loop over thresholdRange
+    for ii, thr in enumerate(tqdm(thresholdRange, desc = "Calculating channel-slope using different regression lengths")):
+        #print("Testing a threshold of ±"+str(thr)+ " pixel(s).")
         #pass tasks
         with concurrent.futures.ProcessPoolExecutor() as executor:
             results = [executor.submit(processBasinWithoutCCs, basin = basin , lsdttTable = lsdttTable, heads = heads, pixThr = int(thr)) for basin in heads.basin_key.unique()]
@@ -620,7 +625,7 @@ def findPixelThreshold(lsdttTable, thresholdRange = np.arange(1,26), sampleBasin
         for task in concurrent.futures.as_completed(results):
             out = pd.concat([out,task.result()]) 
                
-        
+        #calculate median, and 25th + 7th percentile
         data[ii, 0] = thr
         data[ii, 1] = np.nanmedian(out.SlopeChange)
         data[ii, 2] = np.nanpercentile(out.SlopeChange, 25)
@@ -634,7 +639,7 @@ def findPixelThreshold(lsdttTable, thresholdRange = np.arange(1,26), sampleBasin
     direction='decreasing',
     interp_method='polynomial')
 
-    
+    #plot
     plt.figure()
     plt.plot(data[:,0], data[:,1])
     plt.errorbar(data[:,0], data[:,1], yerr = [ data[:,2], data[:,3]], color = "blue")
@@ -718,6 +723,7 @@ def assignDFSI(path, allCCName, debrisName, pixThr = 0.23, dSlopeThr = 0.23, bri
     cc.loc[cc.clusterKM != DFcluster, "DFSI"] = np.nan
     #normalize and invert DFSI values
     cc.DFSI = (normalize(cc.DFSI)-1)*-1
+    #set nan values to -1 again
     cc.loc[cc.clusterKM != DFcluster, "DFSI"] = -1
     
     #plot results 
@@ -742,10 +748,12 @@ def backsorting(fname, path, dfsiValues, pixThr = 10, dSlopeThr = 0.23, bridge =
     
     #merge dataframes based on cc ID
     merge = flow.set_index('ccID').join(dfsiValues.set_index('ccID'))
-
+    
+    #drop nodes with the same X and Y coordinates and keep the one that shows the highest DFSI
     df = merge.sort_values('DFSI', ascending=False).drop_duplicates(['X','Y'])
     df = df.reset_index()
-
+    
+    #save to file
     df.to_csv(path+fname+"_ConnectedComponents_streams_withDFSI_"+str(pixThr)+"_"+str(np.round(dSlopeThr,2))+"_"+str(bridge)+".csv", index = False)
     print("I have written "+fname+"_ConnectedComponents_streams_withDFSI_"+str(pixThr)+"_"+str(np.round(dSlopeThr,2))+"_"+str(bridge)+".csv")
 
