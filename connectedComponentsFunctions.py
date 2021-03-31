@@ -535,7 +535,7 @@ def runCCAnalysis(fname, path, lsdttTable, pixThr = 10, dSlopeThr = 0.23, bridge
 
 #####################################################################################################################    
 
-def findDSlopeThreshold(lsdttTable, pixThr = 10, bridge = 5, thresholdRange = np.round(np.arange(0.05,0.31,0.01),2)):
+def findDSlopeThreshold(lsdttTable, pixThr = 10, bridge = 5, thresholdRange = np.round(np.arange(0.05,0.31,0.01),2), writeCSV = False):
     #similar to runCCAnalysis Script. Process is repeated for different thresholds and output CCs are compared 
     #lsdttTable of debris flow sample regions should be provided
     
@@ -590,11 +590,17 @@ def findDSlopeThreshold(lsdttTable, pixThr = 10, bridge = 5, thresholdRange = np
     plt.title("Optimal slope-change threshold to constrain CCs")
     plt.show()    
     
+    #optional: write output to csv
+    if writeCSV:
+        csv = pd.DataFrame(data)
+        csv.columns = ["Threshold", "TotalNrStreams", "SingleCCStreams"]
+        csv.to_csv("numberOfSingleCCStreams_variousSlopeChangeThresholds.csv", index = False)
+        
     return(optThr)
 
 #####################################################################################################################
 
-def findPixelThreshold(lsdttTable, thresholdRange = np.arange(1,26), sampleBasinID = -1, sampleStreams = -1):
+def findPixelThreshold(lsdttTable, thresholdRange = np.arange(1,26), sampleBasinID = -1, sampleStreams = -1, writeCSV = False):
     #make sure that thresholds are in ascending order
     thresholdRange = np.sort(thresholdRange)
     #empty array for storing data
@@ -636,8 +642,7 @@ def findPixelThreshold(lsdttTable, thresholdRange = np.arange(1,26), sampleBasin
     np.array(data[:,0]),
     np.array(data[:,1]),
     curve='convex',
-    direction='decreasing',
-    interp_method='polynomial')
+    direction='decreasing')
 
     #plot
     plt.figure()
@@ -650,6 +655,12 @@ def findPixelThreshold(lsdttTable, thresholdRange = np.arange(1,26), sampleBasin
     plt.title("Optimal regression length for calculating channel slope")
     plt.show()
     
+    #optional: write output to csv
+    if writeCSV:
+        csv = pd.DataFrame(data)
+        csv.columns = ["Threshold", "Median", "P25", "P75"]
+        csv.to_csv("slopeChange_variousPixelThresholds.csv", index = False)
+        
     print("Out of the given pixel thresholds "+str(thresholdRange)+ ", I recommend taking the value "+str(int(kn.knee))+".")
     
     return(int(kn.knee))
