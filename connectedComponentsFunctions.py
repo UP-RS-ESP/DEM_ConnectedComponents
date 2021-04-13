@@ -14,6 +14,7 @@ import geopandas as gpd
 import os, sys
 import rasterio
 import matplotlib.pyplot as plt
+from shapely.geometry import Point
 from scipy.stats import linregress, gaussian_kde
 from kneed import KneeLocator
 import concurrent.futures
@@ -25,21 +26,21 @@ pd.set_option('mode.chained_assignment', None)
 
 #####################################################################################################################
 
-def getLSDTTFlowlines(fname,path, lsdttPath = "~/LSDTopoTools/LSDTopoTools2/LSDTopoTools/LSDTopoTools2/bin/", minContributingPixels = 1000, maxBasinSize = 11111111,findCompleteBasins = "false", testBoundaries = "false", m_over_n = 0.45):
+def getLSDTTFlowlines(fname,path, lsdttPath = "~/LSDTopoTools/LSDTopoTools2/LSDTopoTools/LSDTopoTools2/bin/", minContributingPixels = 1000, maxBasinSize = 11111111,findCompleteBasins = "true", testBoundaries = "true", m_over_n = 0.45):
     #this function converts the input geotiff to ENVI format, creates a driver file and runs lsdtt-chi mapping to extract channels
    
     #change geotiff to bil format for lsdtt
     
     print("Converting GeoTIFF ton ENVI format...")
-    os.system("gdal_translate -of ENVI "+fname+".tif "+fname+".bil")
+    os.system("gdal_translate -of ENVI "+path+fname+".tif "+path+fname+".bil")
     
     #create driver file for lsdtt
     try: 
-        os.remove(fname+".driver")
+        os.remove(path+fname+".driver")
     except OSError:
         pass
     stdoutOrigin=sys.stdout
-    sys.stdout = open (fname+".driver", "a")
+    sys.stdout = open (path+fname+".driver", "a")
     
     print("""
 read path: %s
@@ -90,6 +91,25 @@ def normalize(x):
 
 #####################################################################################################################
 
+def normalizeStd(x, plow = 5, phigh = 95):
+    #just a min max scaler using percentiles instead of min and max values. Values above 1 will be assigned one and 
+    #values below 0 will be set to 0
+    scaled = (x-np.nanpercentile(x, plow))/(np.nanpercentile(x, phigh)-np.nanpercentile(x, plow))
+    scaled.loc[scaled>1]=1    
+    scaled.loc[scaled<0]=0                                      
+    return(scaled)
+
+#####################################################################################################################
+
+def normalizeCustomValues(x, minVal, maxVal):
+    #just a min max scaler using percentiles instead of min and max values. Values above 1 will be assigned one and 
+    #values below 0 will be set to 0
+    scaled = (x-minVal)/(maxVal-minVal)
+    scaled.loc[scaled>1]=1    
+    scaled.loc[scaled<0]=0                                      
+    return(scaled)
+#####################################################################################################################
+
 def toUTM(df, epsg):
     #turn lat and lon into UTM coordinates because LSD only provides geographic CRS
     gdf = df.set_geometry(gpd.points_from_xy(df.longitude, df.latitude), crs="EPSG:4326")
@@ -100,11 +120,11 @@ def toUTM(df, epsg):
 
 #####################################################################################################################
 
-def mergeLSDTToutput(fname, path, resolution, epsg):
+def mergeLSDTToutput(fname, path, resolution, epsg, ext = "", writeCSV = False):
     #function combines _MChiSegmented file with the reciever nodes from the _CN file to know which stream pixel comes next
     print("Merging CSV files from LSDTopoTools...")
     #load chi segmented channels from LSDTT
-    lsdttTable = pd.read_csv(path+fname+"_MChiSegmented.csv")
+    lsdttTable = pd.read_csv(path+fname+"_MChiSegmented"+ext+".csv")
     #Convert long lat to UTM
     lsdttTable = toUTM(lsdttTable, epsg)
     # get coorndinates
@@ -116,34 +136,55 @@ def mergeLSDTToutput(fname, path, resolution, epsg):
     #spatial join does not work, because points are slightly offset
     
     #CSV to shapefile because gdal_rasterize didnt like the csv format
-    ogr2ogr = "ogr2ogr -s_srs EPSG:4326 -t_srs EPSG:32719 -oo X_POSSIBLE_nameS=lon* -oo Y_POSSIBLE_nameS=lat*  -f \"ESRI Shapefile\" "+path+fname+"_CN.shp "+path+fname+"_CN.csv"  
-    os.system(ogr2ogr)
-    #now rasterize the information about the reciever nodes
-    rasterize = "gdal_rasterize -a \"receiver_N\" -tr "+str(resolution)+" "+ str(resolution)+" -a_nodata 0 -co COMPRESS=DEFLATE -co ZLEVEL=9 "+path+fname+"_CN.shp "+path+fname+"_RNI.tif"
-    os.system(rasterize)
+    if not os.path.isfile(path+fname+"_RNI.tif"): 
+        if not os.path.isfile(path+fname+"_CN.shp"): 
+            ogr2ogr = "ogr2ogr -s_srs EPSG:4326 -t_srs EPSG:32719 -oo X_POSSIBLE_nameS=lon* -oo Y_POSSIBLE_nameS=lat*  -f \"ESRI Shapefile\" "+path+fname+"_CN.shp "+path+fname+"_CN.csv"  
+            os.system(ogr2ogr)
+        #now rasterize the information about the reciever nodes
+
+        rasterize = "gdal_rasterize -a \"receiver_N\" -tr "+str(resolution)+" "+ str(resolution)+" -a_nodata 0 -co COMPRESS=DEFLATE -co ZLEVEL=9 "+path+fname+"_CN.shp "+path+fname+"_RNI.tif"
+        os.system(rasterize)
     
     #open raster and extract reciever node information to points
     rni = rasterio.open(path+fname+"_RNI.tif") #load reciever node raster
     lsdttTable['RNI'] = [x[0] for x in rni.sample(coords)] #sample reciever nodes at points
     
+    if writeCSV:
+        lsdttTable.to_csv(path+fname+"_LSDTToutput_merged.csv", index = False)
+        print("I have written "+fname+"_LSDTToutput_merged.csv")
     return lsdttTable
+
 
 #####################################################################################################################
  
-def processBasin(basin, lsdttTable, heads, pixThr, dSlopeThr, bridge):    
+def processBasin(basin, lsdttTable, heads, pixThr, dSlopeThr, bridge, minCCLength = 2):    
     #function calculates channel slope and connected components for individual catchments
     
     #empty dataframe for storing output
-    df = pd.DataFrame(columns = ["X","Y","StreamID","BasinID", "Elevation", "DrainageArea", "XYDistanceToNextPixel", "DownstreamDistance", "3DDistanceToNextPixel",  "Slope", "R2", "ksn", "ccID", "segmentLocation", "dSlopeToPrevSegment"])
-       
+    df = pd.DataFrame(columns = ["X","Y","StreamID","BasinID", "Elevation", "DrainageArea", "XYDistanceToNextPixel", "DownstreamDistance", "3DDistanceToNextPixel",  "Slope", "R2", "ksn", "FlowDistance_Catchment","ccID", "segmentLocation", "dSlopeToPrevSegment"])
+    
+    #convert catchment-wide flow-distance so that the maximum flow distance is the basin outlet
+    #lsdttTable.flow_distance = (lsdttTable.flow_distance - max(lsdttTable.flow_distance))*-1
+    
+    #add dummy last node to the input lsdttTable for the current basin so that all channel pixels will be processed (else the last one is left out)
+    dummy = pd.DataFrame(np.nan, index=[len(lsdttTable)], columns=lsdttTable.columns)
+    dummy.node = -9999
+    dummy.RNI = -9999
+    #in lsdttTable, replace RNI of actual last pixel where nextNode == currentNode with -9999
+    lsdttTable.loc[lsdttTable.node == lsdttTable.RNI, 'RNI'] = -9999
+    #merge lsdttTable and dummy
+    lsdttTable = pd.concat([lsdttTable,dummy])  
+    
+    #find terminal node of processed basin to correctly assign the segment location
+    finalNode = -9999 #lsdttTable.loc[lsdttTable.flow_distance == max(lsdttTable.flow_distance)].node.iloc[0]
+    
     #print("Processing basin "+str(basin+1)+"/"+str(heads["basin_key"].nunique()))
     #subset channel heads by catchment
     bheads = heads.loc[(heads.basin_key == basin)].reset_index(drop = True)
     for ii, currentNode in enumerate(bheads.node):
-
+        
         #print("Processing channelhead "+str(ii+1)+"/"+str(len(bheads)))
         nextNode = bheads.RNI[ii]
-        
         #set parameters for CC extraction
         dupCounter = 0 #indicator whether or not a pixel has already been processed (after intersection)
         segmentLocationcount = 1 
@@ -156,19 +197,23 @@ def processBasin(basin, lsdttTable, heads, pixThr, dSlopeThr, bridge):
         elev[:] = np.nan
         dsDist = np.zeros(shape=(2*pixThr+1))
         dsDist[:] = np.nan
-            
+        
+        #make sure to process streams one more time after reaching the condition nextNode == currentNode
+        # oncemore = iter([True, False])
+        # process = True
+        
         #empty array for storing data
-        data = np.zeros([60000,12]) #if there are really really long channels (> 60000 pixels), this array needs to be expanded
+        data = np.zeros([60000,13]) #if there are really really long channels (> 60000 pixels), this array needs to be expanded
         data[:] = np.nan
         j=0
-            
+        
         #start going down a channel
         #do so while the current node is not the next node (happens at channel outlet) and there is still space in the array
         while(currentNode != nextNode and j < len(data)):
 
             #identify data at current and next node
-            crrnt = lsdttTable.loc[np.where(lsdttTable.node == currentNode)]
-            nxt = lsdttTable.loc[np.where(lsdttTable.node == nextNode)]
+            crrnt = lsdttTable.loc[np.where(lsdttTable.node == currentNode)].reset_index(drop = True)
+            nxt = lsdttTable.loc[np.where(lsdttTable.node == nextNode)].reset_index(drop = True)
             
             #break the loop if a next Node is not available
             #this might happen, if the lsdttTable is subsetted
@@ -199,11 +244,11 @@ def processBasin(basin, lsdttTable, heads, pixThr, dSlopeThr, bridge):
                 data[j,4] = crrnt.drainage_area.iloc[0] #drainage area
                 data[j,5] = dist3D #dsDistXYZ
                 data[j,6] = crrnt.m_chi.iloc[0] #ksn 
-                
+                data[j,12] = crrnt.flow_distance.iloc[0]
                 #find next node
                 currentNode = nextNode
                 nextNode = lsdttTable.loc[np.where(lsdttTable.node == currentNode)].RNI.iloc[0]
-                
+                    
                 #if the current combination of X and Y coordinates is already in the output dataframe, increase the duplication counter
                 #because slope and cc calculation are lagging, slope calculation needs to continue at least j+pixThr+bridge rounds until it can terminate
                 if((df[['X','Y']].values == [data[j,0], data[j,1]]).all(axis=1).any()):
@@ -242,7 +287,9 @@ def processBasin(basin, lsdttTable, heads, pixThr, dSlopeThr, bridge):
 
        
                     else: 
-                        if(abs(mean-slopeInvestigated)<=dSlopeThr): #if Slope of current pixel is smaller than the mean of the current connected segment
+                        if(abs(mean-slopeInvestigated)<=dSlopeThr or len(mList) < minCCLength): #if Slope of current pixel is smaller than the mean of the current connected segment
+                        #and if we have already processed enough points to pass the minimum CC length
+                        
                             data[j-pixThr-bridge, 9]= ccID #assign the same ccID
                             data[j-pixThr-bridge, 10]=segmentLocationcount #assign segment location
                   
@@ -255,6 +302,7 @@ def processBasin(basin, lsdttTable, heads, pixThr, dSlopeThr, bridge):
                             data[j-pixThr-bridge, 9] = ccID
                             data[j-pixThr-bridge, 10]=segmentLocationcount
                             
+  
                         else: #terminate segment
                         
                             #calculate slope change with regard to previous CC
@@ -279,104 +327,191 @@ def processBasin(basin, lsdttTable, heads, pixThr, dSlopeThr, bridge):
                             data[j-pixThr-bridge, 10]=segmentLocationcount
 
             ##########################################
-            #calculate slope at end of stream                                                                                                                        
-            if(currentNode == nextNode and j>pixThr): # currentNode = nextNode (end of stream) + stream is longer than threshold pixels
-                #compute the remaining slope values (slope comutation is lagging by number of pixels chosen as pixel Threshold)
-                for k in range(j-pixThr, j, 1):
-                    #print("Calculating slope for point "+str(k))
-                    elev = np.insert(elev, 0, np.nan) #fill with nan from start
-                    elev = np.delete(elev, 2*pixThr+1) #remove last
-                    dsDist = np.insert(dsDist, 0, np.nan)
-                    dsDist = np.delete(dsDist, 2*pixThr+1)
-                    mask = ~np.isnan(dsDist) & ~np.isnan(elev)
-                    reg = linregress(np.cumsum(dsDist[mask]),elev[mask])
-                    data[k,7] = abs(reg[0]) #slope
-                    data[k,8] = reg[2] #R2
+            #if catchments are cutoff by previously masking the lsdtt flowlines, small cutoff streams will cause errors           
+            if(currentNode == nextNode and dupCounter == 0 and j<minCCLength):
+                print("Small stream shorter than minimum required regression length removed.")
+            else:
+                #calculate slope at end of stream                                                                                                                        
+                if(currentNode == nextNode): # currentNode = nextNode (end of stream)
+                    #if we have a really short stream (<pixThr), just fit a single regression to all pixels
+                    if j<pixThr:
+                        print("Stream is shorter than regression length. I am going to fit a single regression for the entire channel.")
+                        mask = ~np.isnan(dsDist) & ~np.isnan(elev)
+                        reg = linregress(np.cumsum(dsDist[mask]),elev[mask])
+                        data[0:j,7] = abs(reg[0]) #slope
+                        data[0:j,8] = reg[2] #R2
+                    #compute the remaining slope values (slope comutation is lagging by number of pixels chosen as pixel Threshold)                
+                    else:    
+                        for k in range(j-pixThr, j+1, 1):
+                            #print("Calculating slope for point "+str(k))
+                            elev = np.insert(elev, 0, np.nan) #fill with nan from start
+                            elev = np.delete(elev, 2*pixThr+1) #remove last
+                            dsDist = np.insert(dsDist, 0, np.nan)
+                            dsDist = np.delete(dsDist, 2*pixThr+1)
+                            mask = ~np.isnan(dsDist) & ~np.isnan(elev)
+                            reg = linregress(np.cumsum(dsDist[mask]),elev[mask])
+                            data[k,7] = abs(reg[0]) #slope
+                            data[k,8] = reg[2] #R2
+                        
+    
+                        # plt.figure()
+                        # plt.scatter(np.cumsum(dsDist[mask]),elev[mask], color = "gray")
+                        # plt.hlines(data[k,2], 0 ,40)
+                        # plt.show()
+                        
+                    #########################################
+                    #finish calculating CCs
+                    #if the stream is shorter than the minimal required CC length, everything is just assigned to a single component
+                    #and the segment location will be 4
+                    if(j < minCCLength):
+                        data[0:j,9] = ccID
+                        data[0:j, 10] = 4 
+                        
+                    # if we have short streams (< pixThr+bridge), the bridging option will be turned off and the connectivity of the stream is investigated from ch to outlet    
+                    elif(j < pixThr+bridge):
+                        print("Short stream. Cannot bridge pixels.")
+                        for k in range(j+1):
+                            slopeInvestigated = data[k,7]
+                            if(k == 0): #first pixel cannot be compared to other ones                     
+                            #add slope to mean cc slope df
+                                mList.append(slopeInvestigated) #append current slope
+                                mean = np.mean(mList) #calculate mean
+                                #add current ccID
+                                data[k, 9] = ccID
+                                data[k, 10]=segmentLocationcount
+           
+                            else:         
+                                if(abs(mean-slopeInvestigated)<=dSlopeThr or len(mList) < minCCLength): #if Slope of current pixel is smaller than the mean of the current connected segment
+        
+                                    data[k, 9]= ccID #assign the same ccID
+                                    data[k, 10]=segmentLocationcount                  
+                                    mList.append(slopeInvestigated) #add Slope to Slope list and compute mean
+                                    mean = np.mean(mList)
+                                    
+                                    #if the stream ends naturally, the CC needs to be terminated as well (only thing missing is calculating the dPrevSLp)
+                                    if(k == j):
+                                        try:
+                                            data[np.where(data[:,9]==ccID),11]= previousSlps[-1]-mean
+                                        except IndexError: #if list previousSlps is empty, it will result in an index error
+                                            pass
+                                        
+                                    
+                                else: #terminate segment
+                                    #calculate slope change with regard to previous CC
+                                    try: 
+                                        data[np.where(data[:,9]==ccID),11]= previousSlps[-1]-mean
+                                    except IndexError: #if list previousSlps is empty, it will result in an index error -> except
+                                        pass
+                                    ccID+=1 #increase CCID
+                                    data[k, 9] = ccID #assign new ccID
+        
+                                    mList = [] #clear list
+                                    mList.append(slopeInvestigated)
+                                    previousSlps.append(mean) #append previous Slope values to list to be able to compare them later on
+                                    mean = np.mean(mList)
+                                    if(segmentLocationcount == 1): #increase segmentLocationcount to two if a first segment already exists
+                                        segmentLocationcount = 2
+                                    data[k, 10]=segmentLocationcount  
                     
-
-                    # plt.figure()
-                    # plt.scatter(np.cumsum(dsDist[mask]),elev[mask], color = "gray")
-                    # plt.hlines(data[k,2], 0 ,40)
-                    # plt.show()
-                    
-                #########################################
-                #finish calculating CCs
-                for k in range(j-pixThr-bridge, j, 1):
-
-                    slopeInvestigated = data[k,7]
-
-                    if(k == 0): #first pixel cannot be compared to other ones                     
-                        #add slope to mean cc slope df
-                        mList.append(slopeInvestigated) #append current slope
-                        mean = np.mean(mList) #calculate mean
-                        #add current ccID
-                        data[k, 9] = ccID
-                        data[k, 10]=segmentLocationcount
-       
-                    else: 
-                        #look five pixels ahead to see if there are any slopes that match the mean so that a CC would be bridged
-                        futureLook = data[k+1:k+1+bridge,7]
-                        #mask to avoid runtime error
-                        futureLook = futureLook[~np.isnan(futureLook)]
-
-                        if(abs(mean-slopeInvestigated)<=dSlopeThr): #if Slope of current pixel is smaller than the mean of the current connected segment
-
-                            data[k, 9]= ccID #assign the same ccID
-                            data[k, 10]=segmentLocationcount                  
-                            mList.append(slopeInvestigated) #add Slope to Slope list and compute mean
-                            mean = np.mean(mList)
-                            
-                            #if the stream ends naturally, the CC needs to be terminated as well (only thing missing is calculating the dPrevSLp)
-                            if(k == j):
-                                try:
-                                    data[np.where(data[:,9]==ccID),11]= previousSlps[-1]-mean
-                                except IndexError: #if list previousSlps is empty, it will result in an index error
-                                    pass
-                                
-                        #bridge outliers, these wont be added to the mean list  
-                        elif(np.any(abs(mean-futureLook)<=dSlopeThr)): 
-                            
-                            #if Slope of current pixel is smaller than the mean of the current connected segment, but up to 5 pixels downstream the slope is still within threshold bounds
-                            data[k, 9] = ccID
-                            data[k, 10]=segmentLocationcount
-                            
-                        else: #terminate segment
-                            #calculate slope change with regard to previous CC
-                            try: 
-                                data[np.where(data[:,9]==ccID),11]= previousSlps[-1]-mean
-                            except IndexError: #if list previousSlps is empty, it will result in an index error -> except
-                                pass
-                            ccID+=1 #increase CCID
-                            data[k, 9] = ccID #assign new ccID
-
-                            mList = [] #clear list
-                            mList.append(slopeInvestigated)
-                            previousSlps.append(mean) #append previous Slope values to list to be able to compare them later on
-                            mean = np.mean(mList)
-                            if(segmentLocationcount == 1): #increase segmentLocationcount to two if a first segment already exists
-                                segmentLocationcount = 2
-                            data[k, 10]=segmentLocationcount                 
+                    # if the stream is sufficiently long, finish calculating CCs 
+                    else:
+                        for k in range(j-pixThr-bridge, j+1, 1):
+                            slopeInvestigated = data[k,7]
+        
+                            if(k == 0): #first pixel cannot be compared to other ones                     
+                                #add slope to mean cc slope df
+                                mList.append(slopeInvestigated) #append current slope
+                                mean = np.mean(mList) #calculate mean
+                                #add current ccID
+                                data[k, 9] = ccID
+                                data[k, 10]=segmentLocationcount
+               
+                            else: 
+                                #look five pixels ahead to see if there are any slopes that match the mean so that a CC would be bridged
+                                futureLook = data[k+1:k+1+bridge,7]
+                                #mask to avoid runtime error
+                                futureLook = futureLook[~np.isnan(futureLook)]
+        
+                                if(abs(mean-slopeInvestigated)<=dSlopeThr or len(mList) < minCCLength): #if Slope of current pixel is smaller than the mean of the current connected segment
+        
+                                    data[k, 9]= ccID #assign the same ccID
+                                    data[k, 10]=segmentLocationcount                  
+                                    mList.append(slopeInvestigated) #add Slope to Slope list and compute mean
+                                    mean = np.mean(mList)
+                                    
+                                    #if the stream ends naturally, the CC needs to be terminated as well (only thing missing is calculating the dPrevSLp)
+                                    if(k == j):
+                                        try:
+                                            data[np.where(data[:,9]==ccID),11]= previousSlps[-1]-mean
+                                        except IndexError: #if list previousSlps is empty, it will result in an index error
+                                            pass
+                                        
+                                #bridge outliers, these wont be added to the mean list  
+                                elif(np.any(abs(mean-futureLook)<=dSlopeThr)): 
+                                    
+                                    #if Slope of current pixel is smaller than the mean of the current connected segment, but up to 5 pixels downstream the slope is still within threshold bounds
+                                    data[k, 9] = ccID
+                                    data[k, 10]=segmentLocationcount
+                                    
+                                else: #terminate segment
+                                    #calculate slope change with regard to previous CC
+                                    try: 
+                                        data[np.where(data[:,9]==ccID),11]= previousSlps[-1]-mean
+                                    except IndexError: #if list previousSlps is empty, it will result in an index error -> except
+                                        pass
+                                    ccID+=1 #increase CCID
+                                    data[k, 9] = ccID #assign new ccID
+        
+                                    mList = [] #clear list
+                                    mList.append(slopeInvestigated)
+                                    previousSlps.append(mean) #append previous Slope values to list to be able to compare them later on
+                                    mean = np.mean(mList)
+                                    if(segmentLocationcount == 1): #increase segmentLocationcount to two if a first segment already exists
+                                        segmentLocationcount = 2
+                                    data[k, 10]=segmentLocationcount                 
     
             j+=1
         
+        #for sufficiently long channels: if the final CC is too short, merge with previous one 
+        if(j >= minCCLength and len(mList)<minCCLength and ccID>0):
+            #mList = data[np.where(data[:,9]==ccID),7][0] #get old slopes back
+            segmentLocationcount = data[np.where(data[:,9]==ccID-1),10][0][0] #get the last segment location count
+            data[np.where(data[:,9] == ccID), 10] = segmentLocationcount #assign it to current ccID
+            data[np.where(data[:,9] == ccID), 9]= ccID-1 #assign old ccID where the current ccID was set
+            if len(previousSlps)>0:
+                previousSlps = np.delete(previousSlps, -1) #delete last Value from previous slopes
+            #turn back ccID
+            ccID -= 1
         #finish assigning the correct segment location: 
         #if the terminal pixel of a stream is reached 
         #and the segment location is still = 1
         #the entire stream is still one CC and needs to be assigned the value 4
-        if(segmentLocationcount == 1 and currentNode == nextNode):
-            data[:,10]=4
-        # else if there are no middle segments and the steam does come to a natural end, set the segemten Locations of the last CC to 3    
-        elif(segmentLocationcount == 2 and currentNode == nextNode):
-            data[np.where(data[:,9]==ccID),10]=3
+        if(j>= minCCLength and currentNode == finalNode):
+            if(segmentLocationcount == 1):
+                data[:,10]=4
+            # else if there are no middle segments and the steam does come to a natural end, set the segement Location of the last CC to 3    
+            elif(segmentLocationcount ==2):
+                data[np.where(data[:,9]==ccID),10]=3
             
         data = data[~np.isnan(data[:, 9])] #remove everything that wasnt assigned a CC 
 
         #convert array to pandas df
-        df = pd.concat([df, pd.DataFrame({"X": data[:,0], "Y": data[:,1],"StreamID":ii, "BasinID":basin, "Elevation": data[:,2], 
-                        "DrainageArea":data[:,4], "XYDistanceToNextPixel": data[:,3], "DownstreamDistance":np.cumsum(data[:,3]), "3DDistanceToNextPixel":data[:,5], "ksn":data[:,6],"Slope":data[:,7], "R2":data[:,8],
-                        "ccID":data[:,9], "segmentLocation":data[:,10], "dSlopeToPrevSegment":data[:,11]})])
+        #if there are isolated single pixel streams in one catchment, data will be empty, causing a ValueError
+        try: 
+            df = pd.concat([df, pd.DataFrame({"X": data[:,0], "Y": data[:,1],"StreamID":ii, "BasinID":basin, "Elevation": data[:,2], 
+                            "DrainageArea":data[:,4], "XYDistanceToNextPixel": data[:,3], "DownstreamDistance":np.cumsum(data[:,3]), "3DDistanceToNextPixel":data[:,5], "ksn":data[:,6],
+                            "FlowDistance_Catchment":data[:,12],"Slope":data[:,7], "R2":data[:,8],
+                            "ccID":data[:,9], "segmentLocation":data[:,10], "dSlopeToPrevSegment":data[:,11]})])
+        except ValueError:
+            pass
+        
         #assign truly unique CCIDs 
     df["ccID"]=df["BasinID"].map(str)+"_"+df['StreamID'].map(str)+"_"+df['ccID'].map(str) 
+    
+    #fill NA values for last stream pixel (computation of distance to next pixel not possible)
+    df.XYDistanceToNextPixel = df.XYDistanceToNextPixel.fillna(0)
+    df["3DDistanceToNextPixel"] = df["3DDistanceToNextPixel"].fillna(0)
+    df.DownstreamDistance = df.DownstreamDistance.fillna(0)
     return df             
 
 #####################################################################################################################
@@ -385,7 +520,7 @@ def processBasinWithoutCCs(basin, lsdttTable, heads, pixThr):
     #function calculates channel slope for given basin
     #main purpose is to find a suitable pixel threshold
     df = pd.DataFrame(columns = ["X","Y","StreamID","BasinID", "Elevation", "DrainageArea", "XYDistanceToNextPixel", "DownstreamDistance", "3DDistanceToNextPixel","ksn" ,"Slope", "R2", "SlopeChange"])
-       
+    #print(basin)   
     #subset channel heads by catchment
     bheads = heads.loc[(heads.basin_key == basin)].reset_index(drop = True)
     for ii, currentNode in enumerate(bheads.node):
@@ -464,61 +599,86 @@ def processBasinWithoutCCs(basin, lsdttTable, heads, pixThr):
                     reg = linregress(np.cumsum(dsDist[mask]),elev[mask])
                     data[j-pixThr,7] = abs(reg[0]) #slope
                     data[j-pixThr,8] = reg[2] #R2
-
-        
+                    # plt.figure()
+                    # plt.scatter(np.cumsum(dsDist[mask]),elev[mask], color = "gray")
+                    # plt.hlines(data[j-pixThr,2], 0 ,40)
+                    # plt.show()
+            
+            #if catchments are cutoff by previously masking the lsdtt flowlines, small cutoff streams will cause errors           
+            if(currentNode == nextNode and dupCounter == 0 and j==1):
+                print("Small stream composed of single pixel removed.")
             ##########################################
-            #calculate slope at end of stream                                                                                                                        
-            if(currentNode == nextNode): # currentNode = nextNode (end of stream) 
-                #compute the remaining slope values (slope comutation is lagging by number of pixels chosen as pixel Threshold)
-                for k in range(j-pixThr, j, 1):
-                    #print("Calculating slope for point "+str(k))
-                    elev = np.insert(elev, 0, np.nan) #fill with nan from start
-                    elev = np.delete(elev, 2*pixThr+1) #remove last
-                    dsDist = np.insert(dsDist, 0, np.nan)
-                    dsDist = np.delete(dsDist, 2*pixThr+1)
-                    mask = ~np.isnan(dsDist) & ~np.isnan(elev)
-                    reg = linregress(np.cumsum(dsDist[mask]),elev[mask])
-                    data[k,7] = abs(reg[0]) #slope
-                    data[k,8] = reg[2] #R2
-        
+            #calculate slope at end of stream     
+            else:                                                                                                                   
+                if(currentNode == nextNode): # currentNode = nextNode (end of stream) 
+                    #compute the remaining slope values (slope comutation is lagging by number of pixels chosen as pixel Threshold)
+                    for k in range(j-pixThr, j, 1):
+                        #print("Calculating slope for point "+str(k))
+                        elev = np.insert(elev, 0, np.nan) #fill with nan from start
+                        elev = np.delete(elev, 2*pixThr+1) #remove last
+                        dsDist = np.insert(dsDist, 0, np.nan)
+                        dsDist = np.delete(dsDist, 2*pixThr+1)
+                        mask = ~np.isnan(dsDist) & ~np.isnan(elev)
+                        reg = linregress(np.cumsum(dsDist[mask]),elev[mask])
+                        data[k,7] = abs(reg[0]) #slope
+                        data[k,8] = reg[2] #R2
+            
             j+=1
         
 
         data = data[~np.isnan(data[:, 7])] #remove spare space in array
 
         #convert array to pandas df
-        df = pd.concat([df, pd.DataFrame({"X": data[:,0], "Y": data[:,1],"StreamID":ii, "BasinID":basin, "Elevation": data[:,2], 
-                        "DrainageArea":data[:,4], "XYDistanceToNextPixel": data[:,3], "DownstreamDistance":np.cumsum(data[:,3]), 
-                        "3DDistanceToNextPixel":data[:,5], "ksn":data[:,6],"Slope":data[:,7], "R2":data[:,8], "SlopeChange":np.append(abs(np.diff(data[:,7])),np.nan)})])
-
+        #if there are isolated single pixel streams in one catchment, data will be empty, causing a ValueError
+        try: 
+            df = pd.concat([df, pd.DataFrame({"X": data[:,0], "Y": data[:,1],"StreamID":ii, "BasinID":basin, "Elevation": data[:,2], 
+                            "DrainageArea":data[:,4], "XYDistanceToNextPixel": data[:,3], "DownstreamDistance":np.cumsum(data[:,3]), 
+                            "3DDistanceToNextPixel":data[:,5], "ksn":data[:,6],"Slope":data[:,7], "R2":data[:,8], "SlopeChange":np.append(abs(np.diff(data[:,7])),np.nan)})])
+        except ValueError:
+            pass
     return df     
-
+     
 #####################################################################################################################        
 
-def runCCAnalysis(fname, path, lsdttTable, pixThr = 10, dSlopeThr = 0.23, bridge = 5):
+def runCCAnalysis(fname, path, lsdttTable, pixThr = 7, dSlopeThr = 0.2, bridge = 5, minCCLength = 2, mask = "", epsg = 4326):
     #function to execute the processBasin function by passing different tasks to different cores
-    
+ 
     #get all nodes that are NOT in reciever nodes as channel heads
     heads = lsdttTable[~lsdttTable.node.isin(lsdttTable.RNI)].reset_index(drop=True)
     
+    #optionally constrain channelheads to be within AOI
+    if mask != "":
+        #convert to spatial points
+        geometry = [Point(xy) for xy in zip(heads.longitude, heads.latitude)]
+        crs = 'EPSG:'+str(epsg)
+        gdf = gpd.GeoDataFrame(heads, crs=crs, geometry=geometry)
+        #load mask
+        poly = gpd.read_file(path+mask)
+        if not poly.crs == crs:
+            poly = poly.to_crs(crs)
+        #clip with mask
+        heads = gpd.clip(gdf,poly)
+        heads = heads.drop(columns = ["geometry"])
+        
+    
     #now get all basins
-    #print("I found "+str(heads["basin_key"].nunique())+" catchments.")
+    print("I found "+str(heads["basin_key"].nunique())+" catchments.\n")
 
     #loop over all basins in csv file and give each task to a different core
     #pass tasks
     with concurrent.futures.ProcessPoolExecutor() as executor:
-        results = [executor.submit(processBasin, basin = basin , lsdttTable = lsdttTable, heads = heads, pixThr = pixThr, dSlopeThr = dSlopeThr, bridge = bridge) for basin in tqdm(heads.basin_key.unique(), desc = "Processing "+str(heads["basin_key"].nunique())+" catchments.")]
+        results = [executor.submit(processBasin, basin = basin , lsdttTable = lsdttTable.loc[lsdttTable.basin_key == basin].reset_index(drop = True), heads = heads, pixThr = pixThr, dSlopeThr = dSlopeThr, bridge = bridge, minCCLength = minCCLength) for basin in heads.basin_key.unique()]
     
     #combine results
-    out = pd.DataFrame(columns = ["X","Y","StreamID","BasinID", "Elevation", "DrainageArea", "XYDistanceToNextPixel", "DownstreamDistance", "3DDistanceToNextPixel",  "Slope", "R2", "ksn", "ccID", "segmentLocation", "dSlopeToPrevSegment"])
+    out = pd.DataFrame(columns = ["X","Y","StreamID","BasinID", "Elevation", "DrainageArea", "XYDistanceToNextPixel", "DownstreamDistance", "3DDistanceToNextPixel",  "Slope", "R2", "ksn", "FlowDistance_Catchment", "ccID", "segmentLocation", "dSlopeToPrevSegment"])
            
     for task in concurrent.futures.as_completed(results):
-        out = pd.concat([out,task.result()])      
+        try:
+            out = pd.concat([out,task.result()])   
+        except ValueError:
+            pass
     
-    #write streams
-    out.to_csv(path+fname+"_ConnectedComponents_streams_"+str(pixThr)+"_"+str(dSlopeThr)+"_"+str(bridge)+".csv", index = False)
-    print("I have written all streams with assigned CC ID to "+fname+"_ConnectedComponents_streams_"+str(pixThr)+"_"+str(dSlopeThr)+"_"+str(bridge)+".csv")
-    
+    out = out.reset_index(drop = True)
     #now get statistics per CC
     cc = out.groupby('ccID').agg({'3DDistanceToNextPixel': 'sum', 'Slope':  ['mean', 'std'], 'DrainageArea': ['min', 'max'], 
                                    'segmentLocation': 'max', "dSlopeToPrevSegment":["max"]})
@@ -528,14 +688,85 @@ def runCCAnalysis(fname, path, lsdttTable, pixThr = 10, dSlopeThr = 0.23, bridge
     cc.columns = ["_".join(x) for x in cc.columns.ravel()]
     cc.columns = ['ccID', 'ccLength', 'ccMeanSlope', 'ccStdSlope', 'minDrainageArea', 'maxDrainageArea','segmentLocation', 'slopeChangeToPrevCC']
     
+    #remove individual small streams that are shorter than the minmal required CC length 
+    shortStreams = out.groupby("ccID").Slope.count().reset_index()
+    shortStreams = shortStreams.loc[shortStreams.Slope < minCCLength]
+    
+    if len(shortStreams.ccID)>0:
+        out = out.loc[~out.ccID.isin(shortStreams.ccID)]
+        cc = cc.loc[~cc.ccID.isin(shortStreams.ccID)]
+        
+        print("I have removed "+ str(len(shortStreams.ccID)) + " stream(s) shorter than the minimal required CC length.")
+        
+    #write streams
+    out.to_csv(path+fname+"_ConnectedComponents_streams_"+str(pixThr)+"_"+str(dSlopeThr)+"_"+str(bridge)+".csv", index = False)
+    print("I have written all streams with assigned CC ID to "+fname+"_ConnectedComponents_streams_"+str(pixThr)+"_"+str(dSlopeThr)+"_"+str(bridge)+".csv")
+    
     #write aggregated parameters
     cc.to_csv(path+fname+"_ConnectedComponents_"+str(pixThr)+"_"+str(dSlopeThr)+"_"+str(bridge)+".csv", index = False)
     
     print("I have written the aggregated parameters for all CCs to "+fname+"_ConnectedComponents_"+str(pixThr)+"_"+str(dSlopeThr)+"_"+str(bridge)+".csv")
 
-#####################################################################################################################    
+#####################################################################################################################
 
-def findDSlopeThreshold(lsdttTable, pixThr = 10, bridge = 5, thresholdRange = np.round(np.arange(0.05,0.31,0.01),2), writeCSV = False):
+def getCatchmentsInAOI(fname, path, mask, epsg = 4326):
+    
+    #function to subset catchments to an area of interest
+    #useful if basins in area of interest are cutoff + filled with a different elevatio model
+    #previous subsetting is not necessary, if channelheads are spatially contrained with a mask when running the CC Analysis
+    
+    #load lsdtt df
+    df = pd.read_csv(path+fname+"_MChiSegmented.csv")
+    #convert to spatial points
+    geometry = [Point(xy) for xy in zip(df.longitude, df.latitude)]
+    crs = 'EPSG:'+str(epsg)
+    gdf = gpd.GeoDataFrame(df, crs=crs, geometry=geometry)
+    #load mask
+    poly = gpd.read_file(path+mask)
+    if not poly.crs == crs:
+        poly = poly.to_crs(crs)
+    #clip with mask
+    catchOI = gpd.clip(gdf,poly)
+    #find catchments inside mask layer
+    df = df.loc[df.basin_key.isin(catchOI.basin_key)]
+    df = df.drop(columns = ["geometry"])
+    df.to_csv(path+fname+'_MChiSegmented_relevantBasins.csv', index = False)
+    print("I have written "+fname+'_MChiSegmented_relevantBasins.csv')
+    
+#####################################################################################################################
+
+def getCCsInAOI(fname, path, mask, epsg = 32719, pixThr= 7, dSlopeThr = 0.25, bridge = 5):
+    #function to retrieve CCs within Area of interest
+    
+    #load CC streams
+    df = pd.read_csv(path+fname+"_ConnectedComponents_streams_"+str(pixThr)+"_"+str(dSlopeThr)+"_"+str(bridge)+".csv")
+    #load aggreagted CCs
+    df2 = pd.read_csv(path+fname+"_ConnectedComponents_"+str(pixThr)+"_"+str(dSlopeThr)+"_"+str(bridge)+".csv")
+    #convert to spatial points
+    geometry = [Point(xy) for xy in zip(df.X, df.Y)]
+    crs = 'EPSG:'+str(epsg)
+    gdf = gpd.GeoDataFrame(df, crs=crs, geometry=geometry)
+    #load mask
+    poly = gpd.read_file(path+mask)
+    if not poly.crs == crs:
+        poly = poly.to_crs(crs)
+
+    #clip with mask
+    CCsOI = gpd.clip(gdf,poly)
+    
+    #find CCs inside mask layer
+    df2 = df2.loc[df2.ccID.isin(CCsOI.ccID)]
+    CCsOI = CCsOI.drop(columns = ["geometry"])
+    CCsOI.to_csv(path+fname+"_ConnectedComponents_streams_"+str(pixThr)+"_"+str(dSlopeThr)+"_"+str(bridge)+"_inAOI.csv", index = False)
+    df2.to_csv(path+fname+"_ConnectedComponents_"+str(pixThr)+"_"+str(dSlopeThr)+"_"+str(bridge)+"_inAOI.csv", index = False)
+    
+    print("I have written "+fname+"_ConnectedComponents_"+str(pixThr)+"_"+str(dSlopeThr)+"_"+str(bridge)+"_inAOI.csv\nand "+
+          fname+"_ConnectedComponents_streams_"+str(pixThr)+"_"+str(dSlopeThr)+"_"+str(bridge)+"_inAOI.csv")
+
+
+#####################################################################################################################     
+
+def findDSlopeThresholdDebrisSamples(lsdttTable, pixThr = 7, bridge = 5, thresholdRange = np.round(np.arange(0.05,0.31,0.01),2), minCCLength = 2, writeCSV = False):
     #similar to runCCAnalysis Script. Process is repeated for different thresholds and output CCs are compared 
     #lsdttTable of debris flow sample regions should be provided
     
@@ -551,13 +782,15 @@ def findDSlopeThreshold(lsdttTable, pixThr = 10, bridge = 5, thresholdRange = np
         
         #pass tasks
         with concurrent.futures.ProcessPoolExecutor() as executor:
-            results = [executor.submit(processBasin, basin = basin , lsdttTable = lsdttTable, heads = heads, pixThr = pixThr, dSlopeThr = thr, bridge = bridge) for basin in heads.basin_key.unique()]
+            results = [executor.submit(processBasin, basin = basin , lsdttTable = lsdttTable.loc[lsdttTable.basin_key == basin].reset_index(drop = True), heads = heads, pixThr = pixThr, dSlopeThr = thr, bridge = bridge, minCCLength = minCCLength) for basin in heads.basin_key.unique()]
         #combine results
-        out = pd.DataFrame(columns = ["X","Y","StreamID","BasinID", "Elevation", "DrainageArea", "XYDistanceToNextPixel", "DownstreamDistance", "3DDistanceToNextPixel",  "Slope", "R2", "ksn", "ccID", "segmentLocation", "dSlopeToPrevSegment"])
+        out = pd.DataFrame(columns = ["X","Y","StreamID","BasinID", "Elevation", "DrainageArea", "XYDistanceToNextPixel", "DownstreamDistance", "3DDistanceToNextPixel",  "Slope", "R2", "ksn", "FlowDistance_Catchment","ccID", "segmentLocation", "dSlopeToPrevSegment"])
                
         for task in concurrent.futures.as_completed(results):
-            out = pd.concat([out,task.result()]) 
-        
+            try:
+                out = pd.concat([out,task.result()]) 
+            except ValueError:
+                pass
         #get toal number of streams    
         nrStreamsTotal = len(out.drop_duplicates(['BasinID','StreamID']))
         
@@ -577,7 +810,7 @@ def findDSlopeThreshold(lsdttTable, pixThr = 10, bridge = 5, thresholdRange = np
     else:
         pos = np.argmax(data[:,2]/data[:,1] >=0.5)
         optThr = data[pos,0]
-        print("Out of the provided slope-change thresholds "+str(thresholdRange)+", I recommend the value "+str(optThr))
+        print("Out of the provided slope-change thresholds "+str(thresholdRange)+", I recommend the value "+str((np.round(optThr,2))))
     
     #plot
     plt.figure()
@@ -596,11 +829,86 @@ def findDSlopeThreshold(lsdttTable, pixThr = 10, bridge = 5, thresholdRange = np
         csv.columns = ["Threshold", "TotalNrStreams", "SingleCCStreams"]
         csv.to_csv("numberOfSingleCCStreams_variousSlopeChangeThresholds.csv", index = False)
         
-    return(np.round(optThr),2)
+    return(np.round(optThr, 2))
+
 
 #####################################################################################################################
 
-def findPixelThreshold(lsdttTable, thresholdRange = np.arange(1,26), sampleBasinID = -1, sampleStreams = -1, writeCSV = False):
+def findDSlopeThresholdAlternative(lsdttTable,dist, pixThr = 7, sampleStreams = -1, sampleBasinID = -1, mask = "", epsg = 4326, path = "./", fname = "StreamNetwork", writeCSV = False, saveFigs = False):
+     #subset lsdttTable by basin (if desired) to speed up processing
+     
+    if sampleBasinID >= 0:
+        #print("Subsetting the input to only sample streams from basin nr. "+str(sampleBasinID)+".")
+        lsdttTable = lsdttTable.loc[np.where(lsdttTable.basin_key == sampleBasinID)].reset_index(drop=True)
+    
+    #get channelheads    
+    heads = lsdttTable[~lsdttTable.node.isin(lsdttTable.RNI)].reset_index(drop=True)
+    
+   
+    #optionally constrain channelheads to be within AOI
+    if mask != "":
+        #convert to spatial points
+        geometry = [Point(xy) for xy in zip(heads.longitude, heads.latitude)]
+        crs = 'EPSG:'+str(epsg)
+        gdf = gpd.GeoDataFrame(heads, crs=crs, geometry=geometry)
+        #load mask
+        poly = gpd.read_file(path+mask)
+        if not poly.crs == crs:
+            poly = poly.to_crs(crs)
+        #clip with mask
+        heads = gpd.clip(gdf,poly)
+        heads = heads.drop(columns = ["geometry"])
+    
+    #get a random subset of x channelheads to speed up processing (if desired)
+    if sampleStreams > 0:
+        #print("Subsetting the input and sampling "+str(sampleStreams)+" random streams.")
+        heads = heads.sample(n = sampleStreams, random_state=123).reset_index(drop = True)
+    
+    #calculate slopes    
+    with concurrent.futures.ProcessPoolExecutor() as executor:
+        results = [executor.submit(processBasinWithoutCCs, basin = basin , lsdttTable = lsdttTable, heads = heads, pixThr = 7) for basin in heads.basin_key.unique()]
+        #combine results
+    out = pd.DataFrame(columns = ["X","Y","StreamID","BasinID", "Elevation", "DrainageArea", "XYDistanceToNextPixel", "DownstreamDistance", "Slope", "R2", "SlopeChange"])
+ 
+    for task in concurrent.futures.as_completed(results):
+        out = pd.concat([out,task.result()]) 
+   
+    #turn dist into a list if the function was not given one
+    thrs = []
+    if not isinstance(dist, list):
+        dist = [dist]
+    for d in dist:
+        slpChange = out.groupby(["BasinID", "StreamID"]).Slope.diff(periods=d)
+        p5 = np.nanpercentile(slpChange, 5)    
+        p95 = np.nanpercentile(slpChange, 95) 
+        # m = np.nanmean(slpChange)
+        # sd = np.nanstd(slpChange)
+        fig = plt.figure()
+        sns.kdeplot(slpChange, linewidth = 2)
+        plt.vlines(p5,plt.ylim()[0], plt.ylim()[1], linestyles='dashed', color = "firebrick", label = "5th percetile: "+str(np.round(p5,2)))
+        plt.vlines(p95,plt.ylim()[0], plt.ylim()[1], linestyles='dashed', label = "95th percetile: "+str(np.round(p95,2)))
+        plt.title("Density distribution of slope change over "+str(d)+" pixels")
+        plt.xlabel("Slope change")
+        plt.legend()
+        if saveFigs:
+            fig.savefig(path+"SlopeChangeDistribution_"+str(d)+"steps.png", dpi = 200) 
+        plt.show() 
+        
+        #append reccomended threshold to list
+        thrs.append(np.round(np.mean([abs(p5),abs(p95)]),2))
+        print("Investigating slope change over " + str(d) + " pixels, I reccomend a value of "+ str(np.round(np.mean([abs(p5),abs(p95)]),2)))    
+    
+    if writeCSV:
+        out.to_csv(path+fname+"_channelSlope_"+str(pixThr)+"px.csv", index = False)
+    
+    
+    if len(thrs)==1:
+        thrs = thrs[0]
+    return(thrs) 
+#####################################################################################################################
+
+
+def findPixelThreshold(lsdttTable, thresholdRange = np.arange(1,26), sampleBasinID = -1, sampleStreams = -1, mask = "", epsg = 4326, path = "./", writeCSV = False):
     #make sure that thresholds are in ascending order
     thresholdRange = np.sort(thresholdRange)
     #empty array for storing data
@@ -614,10 +922,25 @@ def findPixelThreshold(lsdttTable, thresholdRange = np.arange(1,26), sampleBasin
     #get channelheads    
     heads = lsdttTable[~lsdttTable.node.isin(lsdttTable.RNI)].reset_index(drop=True)
     
+       
+    #optionally constrain channelheads to be within AOI
+    if mask != "":
+        #convert to spatial points
+        geometry = [Point(xy) for xy in zip(heads.longitude, heads.latitude)]
+        crs = 'EPSG:'+str(epsg)
+        gdf = gpd.GeoDataFrame(heads, crs=crs, geometry=geometry)
+        #load mask
+        poly = gpd.read_file(path+mask)
+        if not poly.crs == crs:
+            poly = poly.to_crs(crs)
+        #clip with mask
+        heads = gpd.clip(gdf,poly)
+        heads = heads.drop(columns = ["geometry"])
+        
     #get a random subset of x channelheads to speed up processing (if desired)
     if sampleStreams > 0:
         #print("Subsetting the input and sampling "+str(sampleStreams)+" random streams.")
-        heads = heads.sample(n = sampleStreams).reset_index(drop = True)
+        heads = heads.sample(n = sampleStreams, random_state=123).reset_index(drop = True)
     
     #loop over thresholdRange
     for ii, thr in enumerate(tqdm(thresholdRange, desc = "Calculating channel-slope using different regression lengths")):
@@ -626,12 +949,12 @@ def findPixelThreshold(lsdttTable, thresholdRange = np.arange(1,26), sampleBasin
         with concurrent.futures.ProcessPoolExecutor() as executor:
             results = [executor.submit(processBasinWithoutCCs, basin = basin , lsdttTable = lsdttTable, heads = heads, pixThr = int(thr)) for basin in heads.basin_key.unique()]
         #combine results
-        out = pd.DataFrame(columns = ["X","Y","StreamID","BasinID", "Elevation", "DrainageArea", "XYDistanceToNextPixel", "DownstreamDistance", "3DDistanceToNextPixel", "ksn", "Slope", "R2", "SlopeChange"])
-               
+        out = pd.DataFrame(columns = ["X","Y","StreamID","BasinID", "Elevation", "DrainageArea", "XYDistanceToNextPixel", "DownstreamDistance", "Slope", "R2", "SlopeChange"])
+ 
         for task in concurrent.futures.as_completed(results):
             out = pd.concat([out,task.result()]) 
                
-        #calculate median, and 25th + 7th percentile
+        #calculate median, and 25th + 75th percentile
         data[ii, 0] = thr
         data[ii, 1] = np.nanmedian(out.SlopeChange)
         data[ii, 2] = np.nanpercentile(out.SlopeChange, 25)
@@ -659,105 +982,225 @@ def findPixelThreshold(lsdttTable, thresholdRange = np.arange(1,26), sampleBasin
     if writeCSV:
         csv = pd.DataFrame(data)
         csv.columns = ["Threshold", "Median", "P25", "P75"]
-        csv.to_csv("slopeChange_variousPixelThresholds.csv", index = False)
+        csv.to_csv(path+"slopeChange_variousPixelThresholds.csv", index = False)
         
     print("Out of the given pixel thresholds "+str(thresholdRange)+ ", I recommend taking the value "+str(int(kn.knee))+".")
     
     return(int(kn.knee))
 
+
 #####################################################################################################################
 
-def assignDFSI(path, allCCName, debrisName, pixThr = 0.23, dSlopeThr = 0.23, bridge = 5):
-    #load debris samples
-    print("I am going to use "+debrisName+"_ConnectedComponents_"+str(pixThr)+"_"+str(np.round(dSlopeThr,2))+"_"+str(bridge)+".csv as debris-flow samples.")
-    deb = pd.read_csv(path+debrisName+"_ConnectedComponents_"+str(pixThr)+"_"+str(np.round(dSlopeThr,2))+"_"+str(bridge)+".csv")
-    #remove single pixel CCs
-    deb = deb.loc[deb['ccLength'] >0].reset_index(drop = True)
+def componentClustering(path, allCCName, debrisName ="", pixThr = 0.23, dSlopeThr = 0.2, bridge = 5, allExt = "", debExt = "", k = 2, clusterParameters = ["ccLength", "ccMeanSlope", "segmentLocation", "slopeChangeToPrevCC", "distDFSamples"]):
+    
     #load all CCs
-    print("I am going to assign debris-flow similarity values to all CCs in"+ allCCName+"_ConnectedComponents_"+str(pixThr)+"_"+str(np.round(dSlopeThr,2))+"_"+str(bridge)+".csv")
-    cc =  pd.read_csv(path+allCCName+"_ConnectedComponents_"+str(pixThr)+"_"+str(np.round(dSlopeThr,2))+"_"+str(bridge)+".csv")
-    #remove single pixel CCs
-    cc = cc.loc[cc['ccLength'] >0].reset_index(drop = True)
-    # logtransform and normalize data
-    deb["ccLengthNorm"] = normalize(np.log(deb.ccLength))
-    deb["ccMeanSlopeNorm"] = normalize(deb.ccMeanSlope)
-    cc["ccLengthNorm"] = normalize(np.log(cc.ccLength))
-    cc["ccMeanSlopeNorm"] = normalize(cc.ccMeanSlope)
+    cc =  pd.read_csv(path+allCCName+"_ConnectedComponents_"+str(pixThr)+"_"+str(np.round(dSlopeThr,2))+"_"+str(bridge)+allExt+".csv")
+    #cc = cc.loc[cc.ccMeanSlope<=1.5].reset_index(drop=True)
+    print("I am going to assign debris-flow similarity values to all CCs in"+ allCCName+"_ConnectedComponents_"+str(pixThr)+"_"+str(np.round(dSlopeThr,2))+"_"+str(bridge)+allExt+".csv")
     
-    #calculateDensity
-    xy = np.vstack([deb.ccLengthNorm,deb.ccMeanSlopeNorm])
-    deb["Weight"]=normalize(gaussian_kde(xy)(xy))
+    validParameters = ["ccLength", "ccMeanSlope", "segmentLocation", "slopeChangeToPrevCC", "distDFSamples"]
+    #check if given input paramters are valid
+    if not np.all(np.in1d(clusterParameters, validParameters)):
+        print("Please provide valid clustering Parameters. These are:")
+        print(validParameters)
+        return
+    #check if debris-flow sample distances are chosen as a clustering parameter and if yes calculate weights + distances
+    if "distDFSamples" in clusterParameters:
+        if debrisName == "":
+            print("Distance to debris-flow samples was chosen as a clustering parameter, but no sample input was provided. Exiting...")
+            return
+        else:
+        
+            #load debris samples
+            print("I am going to use "+debrisName+"_ConnectedComponents_"+str(pixThr)+"_"+str(np.round(dSlopeThr,2))+"_"+str(bridge)+debExt+".csv as debris-flow samples.")
+            deb = pd.read_csv(path+debrisName+"_ConnectedComponents_"+str(pixThr)+"_"+str(np.round(dSlopeThr,2))+"_"+str(bridge)+debExt+".csv")
+            #remove single pixel CCs
+            deb = deb.loc[deb['ccLength'] >0].reset_index(drop = True)
 
+            # logtransform and normalize data
+            deb["ccLengthNorm"] = normalize(np.log(deb.ccLength))
+            deb["ccMeanSlopeNorm"] = normalize(deb.ccMeanSlope)
+            cc["ccLengthNorm"] = normalize(np.log(cc.ccLength))
+            cc["ccMeanSlopeNorm"] = normalize(cc.ccMeanSlope)
+            
+            #calculateDensity
+            xy = np.vstack([deb.ccLengthNorm,deb.ccMeanSlopeNorm])
+            deb["Weight"]=normalize(gaussian_kde(xy)(xy))
+            
+            #calculate sum of distances for all points
+            def calcSummedDistances(length, slope, deb):
+                sumofDist = (length-deb.ccLengthNorm)**2+(slope-deb.ccMeanSlopeNorm)**2
+                weightedSOD = deb.Weight*sumofDist    
+                return sum(weightedSOD)
+            
+            cc["distDFSamples"] = cc.apply(lambda row: calcSummedDistances(row['ccLengthNorm'], row['ccMeanSlopeNorm'], deb), axis=1)
+            
+            
+            #plot DF CCs and assigned weight
+            # fig = plt.figure()
+            # ax = fig.add_subplot()
+            # ax.scatter(cc.ccLength, cc.ccMeanSlope, s=1, color = "gray", label = "all CCs")
+            # ax.scatter(deb.ccLength, deb.ccMeanSlope, s = deb.Weight*30, c = "r", label= "Debris-flow samples")
+            # ax.set_xscale('log')
+            # ax.set_xlabel("Mean CC Length [m]")
+            # ax.set_ylabel("Mean CC Slope [m/m]")
+            # ax.set_ylim(0,1.5)
+            # plt.legend()
+            # plt.show()
+            
+            # #density plot of distance distribution. 
+            # #should ideally have two strong peaks    
+            
+            # plt.figure()
+            # sns.kdeplot(cc.distDFSamples, linewidth = 2)
+            # plt.title("Density distribution of summed distances to debris-flow samples")
+            # plt.xlabel("Sum of distances")
+            # plt.show()
+            
+            cc = cc.drop(columns = ["ccLengthNorm","ccMeanSlopeNorm"])
     
-    #calculate sum of distances for all points
-    def calcSummedDistances(length, slope, deb):
-        sumofDist = (length-deb.ccLengthNorm)**2+(slope-deb.ccMeanSlopeNorm)**2
-        weightedSOD = deb.Weight*sumofDist    
-        return sum(weightedSOD)
-    
-    cc["sumOfDistances"] = cc.apply(lambda row: calcSummedDistances(row['ccLengthNorm'], row['ccMeanSlopeNorm'], deb), axis=1)
-    
-    
-    #plot DF CCs and assigned weight
-    fig = plt.figure()
-    ax = fig.add_subplot()
-    ax.scatter(cc.ccLength, cc.ccMeanSlope, s=1, color = "gray")
-    ax.scatter(deb.ccLength, deb.ccMeanSlope, s = deb.Weight*5, c = "r")
-    ax.set_xscale('log')
-    ax.set_xlabel("Mean CC Length [m]")
-    ax.set_ylabel("Mean CC Slope [m/m]")
-    plt.show()
-    
-    #density plot of distance distribution. 
-    #should ideally have two strong peaks    
-    
-    plt.figure()
-    sns.kdeplot(cc.sumOfDistances, linewidth = 2)
-    plt.title("Density distribution of summed distances to debris-flow samples")
-    plt.xlabel("Sum of distances")
-    plt.show()
-    
-    #CCs are split into two groups using kmeans clustering based on the sum of Distances to debris flow samples
+    #CCs are split into k groups using kmeans clustering 
     
     print("Clustering ...")
-    scaled = StandardScaler().fit_transform(pd.DataFrame(cc.sumOfDistances))
+    
+    cdf = cc.copy()[cc.columns.intersection(clusterParameters)].fillna(0)
+    
+    if "ccLength" in clusterParameters:
+        cdf.ccLength = np.log(cdf.ccLength)
+    
+    scaled = StandardScaler().fit_transform(pd.DataFrame(cdf))
     km = KMeans(
-        n_clusters=2, init='random',
+        n_clusters = k, init='random',
         n_init=10, max_iter=100, 
-        tol=1e-04, random_state=0
+        tol=1e-04, random_state=123
     )
     cc["clusterKM"] = km.fit_predict(scaled)
-    #find out which of these two clusters has the lower mean distance to DF samples so that the DFSI will only be assigned to that one
-    clusterStats = cc.groupby("clusterKM").sumOfDistances.agg("mean")
-    DFcluster = clusterStats.idxmin()
-    #assign DFSI (=normalized sum of Distances for DF cluster)
-    cc["DFSI"]= cc.sumOfDistances
-    #set to np.nan first so  values for non-DF regions will not be considered during normalization
-    cc.loc[cc.clusterKM != DFcluster, "DFSI"] = np.nan
-    #normalize and invert DFSI values
-    cc.DFSI = (normalize(cc.DFSI)-1)*-1
-    #set nan values to -1 again
-    cc.loc[cc.clusterKM != DFcluster, "DFSI"] = -1
+
     
+    if "distDFSamples" in clusterParameters:
+        #find out which of these two clusters has the lower mean distance to DF samples so that the DFSI will only be assigned to that one
+        clusterStats = cc.groupby("clusterKM").distDFSamples.agg("mean")
+        DFcluster = clusterStats.idxmin()
+        #assign DFSI (=normalized sum of Distances for DF cluster) if DF samples are present
+        cc["DFSI"]= cc.distDFSamples
+        #set to np.nan first so  values for non-DF regions will not be considered during normalization
+        cc.loc[cc.clusterKM != DFcluster, "DFSI"] = np.nan
+        #normalize and invert DFSI values
+        cc.DFSI = (normalize(cc.DFSI)-1)*-1
+        #set nan values to -1 again
+        cc.loc[cc.clusterKM != DFcluster, "DFSI"] = -1
+        
+        #plot results 
+        fig = plt.figure()
+        ax = fig.add_subplot()
+        s = ax.scatter(cc.ccLength, cc.ccMeanSlope, s=5, c = cc.DFSI, cmap = "coolwarm")
+        ax.set_xscale('log')
+        ax.set_xlabel("Mean CC Length [m]")
+        ax.set_ylabel("Mean CC Slope [m/m]")
+        ax.set_ylim(0,1.5)
+        ax.set_title("Assigned DFSI")
+        fig.colorbar(s)
+        plt.show()
+    
+    else: #if not, just assign 1 and -1 
+        
+        #plot results 
+        fig = plt.figure()
+        ax = fig.add_subplot()
+        s = ax.scatter(cc.ccLength, cc.ccMeanSlope, s=5, c = cc.clusterKM, cmap = "coolwarm")
+        ax.set_xscale('log')
+        ax.set_xlabel("Mean CC Length [m]")
+        ax.set_ylabel("Mean CC Slope [m/m]")
+        ax.set_ylim(0,1.5)
+        ax.set_title("Assigned DFSI")
+        fig.colorbar(s)
+        plt.show()
+    
+    #investigate correlation of clustering parameters
+    scaled = pd.DataFrame(scaled, columns = cdf.columns)
+    #compute pairwise correlation
+    corrmat = scaled.corr()
+    
+    #plot heatmap
+    plt.figure(figsize=(12,15))
+    plt.title("Pearson correlation of clustering parameters")
+    sns.heatmap(corrmat,annot=True,cmap="coolwarm")
+    plt.show()
+
+    return(pd.DataFrame({"ccID": cc.ccID, "DFSI":cc.DFSI, "ccLength": cc.ccLength}))
+
+#####################################################################################################################
+def assignDFSI(path, allCCName, debrisName ="", pixThr = 0.23, dSlopeThr = 0.2, bridge = 5, allExt = "", debExt = "", debrisSlopeHigh = 0.6, debrisLengthHigh= 6):
+    
+    #load all CCs
+    cc =  pd.read_csv(path+allCCName+"_ConnectedComponents_"+str(pixThr)+"_"+str(np.round(dSlopeThr,2))+"_"+str(bridge)+allExt+".csv")
+    #cc = cc.loc[cc.ccMeanSlope<=1.5].reset_index(drop=True)
+    print("I am going to assign debris-flow similarity values to all CCs in"+ allCCName+"_ConnectedComponents_"+str(pixThr)+"_"+str(np.round(dSlopeThr,2))+"_"+str(bridge)+allExt+".csv")
+
+    if debrisName == "":
+        print("No sample input provided. I am going to scale values to a CC length of "+str(debrisLengthHigh)+ " and a slope of "+str(debrisSlopeHigh))
+    else:   
+        #load debris samples
+        print("I am going to use "+debrisName+"_ConnectedComponents_"+str(pixThr)+"_"+str(np.round(dSlopeThr,2))+"_"+str(bridge)+debExt+".csv as debris-flow samples.")
+        deb = pd.read_csv(path+debrisName+"_ConnectedComponents_"+str(pixThr)+"_"+str(np.round(dSlopeThr,2))+"_"+str(bridge)+debExt+".csv")
+        #remove single pixel CCs
+        deb = deb.loc[deb['ccLength'] >0].reset_index(drop = True)
+
+        # logtransform and normalize data
+        deb["ccLengthNorm"] = normalize(np.log(deb.ccLength))
+        deb["ccMeanSlopeNorm"] = normalize(deb.ccMeanSlope)
+
+        #calculateDensity
+        xy = np.vstack([deb.ccLengthNorm,deb.ccMeanSlopeNorm])
+        deb["Weight"]=normalizeStd(pd.Series(gaussian_kde(xy)(xy)))
+        
+        #get a weighted average DF slope and length
+        
+        debrisSlopeHigh = np.average(deb.ccMeanSlope, weights = deb.Weight)
+        debrisLengthHigh = np.average(np.log(deb.ccLength), weights = deb.Weight)
+        
+        debrisSlopeLow = deb.ccMeanSlope.quantile(0.05)
+        debrisLengthLow = np.log(deb.ccLength).quantile(0.05)
+   
+    #if no DF samples are provided, scale using the 5th percentile of slope and log length
+    if debrisName == "":    
+        #cc["ccLengthNorm"] = normalizeCustomValues(np.log(cc.ccLength), minVal = np.log(cc.ccLength.min()), maxVal = debrisLength)
+        #cc["ccMeanSlopeNorm"] = normalizeCustomValues(cc.ccMeanSlope, minVal = cc.ccMeanSlope.min(), maxVal = debrisSlope)
+        cc["ccLengthNorm"] = normalizeCustomValues(np.log(cc.ccLength), minVal = np.log(cc.ccLength.quantile(0.05)), maxVal = debrisLengthHigh)
+        cc["ccMeanSlopeNorm"] = normalizeCustomValues(cc.ccMeanSlope, minVal = cc.ccMeanSlope.quantile(0.05), maxVal = debrisSlopeHigh)
+    
+    else: # if DF sample data is present, use 5th percentile of these samples as a minmum Value
+        cc["ccLengthNorm"] = normalizeCustomValues(np.log(cc.ccLength), minVal = debrisLengthLow, maxVal = debrisLengthHigh)
+        cc["ccMeanSlopeNorm"] = normalizeCustomValues(cc.ccMeanSlope, minVal = debrisSlopeLow, maxVal = debrisSlopeHigh)
+    
+    # plt.figure()
+    # sns.kdeplot(cc.ccMeanSlopeNorm, linewidth = 2)
+    # plt.title("Density distribution of summed distances to debris-flow samples")
+    # plt.xlabel("Sum of distances")
+    # plt.show()
+
+    cc["DFSI"] = cc.ccLengthNorm+cc.ccMeanSlopeNorm-1 #substract 1 to scale between -1 and 1
     #plot results 
     fig = plt.figure()
     ax = fig.add_subplot()
-    ax.scatter(cc.ccLength, cc.ccMeanSlope, s=5, c = cc.DFSI)
+    s = ax.scatter(cc.ccLength, cc.ccMeanSlope, s=5, c = cc.DFSI, cmap = "coolwarm")
     ax.set_xscale('log')
     ax.set_xlabel("Mean CC Length [m]")
     ax.set_ylabel("Mean CC Slope [m/m]")
+    ax.set_ylim(0,1.5)
     ax.set_title("Assigned DFSI")
+    fig.colorbar(s)
     plt.show()
     
-    return(pd.DataFrame({"ccID": cc.ccID, "DFSI":cc.DFSI}))
+    return(pd.DataFrame({"ccID": cc.ccID, "DFSI":cc.DFSI, "ccLength": cc.ccLength}))
 
 #####################################################################################################################
 
 
-def backsorting(fname, path, dfsiValues, pixThr = 10, dSlopeThr = 0.23, bridge = 5):
+def backsorting(fname, path, dfsiValues, pixThr = 7, dSlopeThr = 0.2, bridge = 5, ext = ""):
     
     #load stream csv file
-    flow = pd.read_csv(path+fname+"_ConnectedComponents_streams_"+str(pixThr)+"_"+str(np.round(dSlopeThr,2))+"_"+str(bridge)+".csv")
+    flow = pd.read_csv(path+fname+"_ConnectedComponents_streams_"+str(pixThr)+"_"+str(np.round(dSlopeThr,2))+"_"+str(bridge)+ext+".csv")
     
     #merge dataframes based on cc ID
     merge = flow.set_index('ccID').join(dfsiValues.set_index('ccID'))
@@ -765,7 +1208,7 @@ def backsorting(fname, path, dfsiValues, pixThr = 10, dSlopeThr = 0.23, bridge =
     #drop nodes with the same X and Y coordinates and keep the one that shows the highest DFSI
     df = merge.sort_values('DFSI', ascending=False).drop_duplicates(['X','Y'])
     df = df.reset_index()
-    
+    df = df.drop(columns = ["XYDistanceToNextPixel", "3DDistanceToNextPixel"])
     #save to file
     df.to_csv(path+fname+"_ConnectedComponents_streams_withDFSI_"+str(pixThr)+"_"+str(np.round(dSlopeThr,2))+"_"+str(bridge)+".csv", index = False)
     print("I have written "+fname+"_ConnectedComponents_streams_withDFSI_"+str(pixThr)+"_"+str(np.round(dSlopeThr,2))+"_"+str(bridge)+".csv")
