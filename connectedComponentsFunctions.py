@@ -1018,9 +1018,9 @@ def componentClustering(path, allCCName, debrisName ="", pixThr = 0.23, dSlopeTh
             deb = deb.loc[deb['ccLength'] >0].reset_index(drop = True)
 
             # logtransform and normalize data
-            deb["ccLengthNorm"] = normalize(np.log(deb.ccLength))
+            deb["ccLengthNorm"] = normalize(np.log10(deb.ccLength))
             deb["ccMeanSlopeNorm"] = normalize(deb.ccMeanSlope)
-            cc["ccLengthNorm"] = normalize(np.log(cc.ccLength))
+            cc["ccLengthNorm"] = normalize(np.log10(cc.ccLength))
             cc["ccMeanSlopeNorm"] = normalize(cc.ccMeanSlope)
             
             #calculateDensity
@@ -1049,7 +1049,6 @@ def componentClustering(path, allCCName, debrisName ="", pixThr = 0.23, dSlopeTh
             # plt.show()
             
             # #density plot of distance distribution. 
-            # #should ideally have two strong peaks    
             
             # plt.figure()
             # sns.kdeplot(cc.distDFSamples, linewidth = 2)
@@ -1066,7 +1065,7 @@ def componentClustering(path, allCCName, debrisName ="", pixThr = 0.23, dSlopeTh
     cdf = cc.copy()[cc.columns.intersection(clusterParameters)].fillna(0)
     
     if "ccLength" in clusterParameters:
-        cdf.ccLength = np.log(cdf.ccLength)
+        cdf.ccLength = np.log10(cdf.ccLength)
     
     scaled = StandardScaler().fit_transform(pd.DataFrame(cdf))
     km = KMeans(
@@ -1076,45 +1075,19 @@ def componentClustering(path, allCCName, debrisName ="", pixThr = 0.23, dSlopeTh
     )
     cc["clusterKM"] = km.fit_predict(scaled)
 
+
     
-    if "distDFSamples" in clusterParameters:
-        #find out which of these two clusters has the lower mean distance to DF samples so that the DFSI will only be assigned to that one
-        clusterStats = cc.groupby("clusterKM").distDFSamples.agg("mean")
-        DFcluster = clusterStats.idxmin()
-        #assign DFSI (=normalized sum of Distances for DF cluster) if DF samples are present
-        cc["DFSI"]= cc.distDFSamples
-        #set to np.nan first so  values for non-DF regions will not be considered during normalization
-        cc.loc[cc.clusterKM != DFcluster, "DFSI"] = np.nan
-        #normalize and invert DFSI values
-        cc.DFSI = (normalize(cc.DFSI)-1)*-1
-        #set nan values to -1 again
-        cc.loc[cc.clusterKM != DFcluster, "DFSI"] = -1
-        
-        #plot results 
-        fig = plt.figure()
-        ax = fig.add_subplot()
-        s = ax.scatter(cc.ccLength, cc.ccMeanSlope, s=5, c = cc.DFSI, cmap = "coolwarm")
-        ax.set_xscale('log')
-        ax.set_xlabel("Mean CC Length [m]")
-        ax.set_ylabel("Mean CC Slope [m/m]")
-        ax.set_ylim(0,1.5)
-        ax.set_title("Assigned DFSI")
-        fig.colorbar(s)
-        plt.show()
-    
-    else: #if not, just assign 1 and -1 
-        
-        #plot results 
-        fig = plt.figure()
-        ax = fig.add_subplot()
-        s = ax.scatter(cc.ccLength, cc.ccMeanSlope, s=5, c = cc.clusterKM, cmap = "coolwarm")
-        ax.set_xscale('log')
-        ax.set_xlabel("Mean CC Length [m]")
-        ax.set_ylabel("Mean CC Slope [m/m]")
-        ax.set_ylim(0,1.5)
-        ax.set_title("Assigned DFSI")
-        fig.colorbar(s)
-        plt.show()
+    #plot results 
+    fig = plt.figure()
+    ax = fig.add_subplot()
+    s = ax.scatter(cc.ccLength, cc.ccMeanSlope, s=5, c = cc.clusterKM, cmap = "coolwarm")
+    ax.set_xscale('log')
+    ax.set_xlabel("Mean CC Length [m]")
+    ax.set_ylabel("Mean CC Slope [m/m]")
+    ax.set_ylim(0,1.5)
+    ax.set_title("Assigned DFSI")
+    fig.colorbar(s)
+    plt.show()
     
     #investigate correlation of clustering parameters
     scaled = pd.DataFrame(scaled, columns = cdf.columns)
@@ -1127,10 +1100,10 @@ def componentClustering(path, allCCName, debrisName ="", pixThr = 0.23, dSlopeTh
     sns.heatmap(corrmat,annot=True,cmap="coolwarm")
     plt.show()
 
-    return(pd.DataFrame({"ccID": cc.ccID, "DFSI":cc.DFSI, "ccLength": cc.ccLength}))
+    return(pd.DataFrame({"ccID": cc.ccID, "Cluster":cc.clusterKM, "ccLength": cc.ccLength}))
 
 #####################################################################################################################
-def assignDFSI(path, allCCName, debrisName ="", pixThr = 0.23, dSlopeThr = 0.2, bridge = 5, allExt = "", debExt = "", debrisSlopeHigh = 0.6, debrisLengthHigh= 6):
+def assignDFSI(path, allCCName, debrisName ="", pixThr = 0.23, dSlopeThr = 0.2, bridge = 5, allExt = "", debExt = "", debrisSlopeHigh = 0.6, debrisLengthHigh= np.log10(500), writeCSV = False):
     
     #load all CCs
     cc =  pd.read_csv(path+allCCName+"_ConnectedComponents_"+str(pixThr)+"_"+str(np.round(dSlopeThr,2))+"_"+str(bridge)+allExt+".csv")
@@ -1147,7 +1120,7 @@ def assignDFSI(path, allCCName, debrisName ="", pixThr = 0.23, dSlopeThr = 0.2, 
         deb = deb.loc[deb['ccLength'] >0].reset_index(drop = True)
 
         # logtransform and normalize data
-        deb["ccLengthNorm"] = normalize(np.log(deb.ccLength))
+        deb["ccLengthNorm"] = normalize(np.log10(deb.ccLength))
         deb["ccMeanSlopeNorm"] = normalize(deb.ccMeanSlope)
 
         #calculateDensity
@@ -1157,20 +1130,21 @@ def assignDFSI(path, allCCName, debrisName ="", pixThr = 0.23, dSlopeThr = 0.2, 
         #get a weighted average DF slope and length
         
         debrisSlopeHigh = np.average(deb.ccMeanSlope, weights = deb.Weight)
-        debrisLengthHigh = np.average(np.log(deb.ccLength), weights = deb.Weight)
+        debrisLengthHigh = np.average(np.log10(deb.ccLength), weights = deb.Weight)
         
         debrisSlopeLow = deb.ccMeanSlope.quantile(0.05)
-        debrisLengthLow = np.log(deb.ccLength).quantile(0.05)
+        debrisLengthLow = np.log10(deb.ccLength).quantile(0.05)
+    
    
     #if no DF samples are provided, scale using the 5th percentile of slope and log length
     if debrisName == "":    
-        #cc["ccLengthNorm"] = normalizeCustomValues(np.log(cc.ccLength), minVal = np.log(cc.ccLength.min()), maxVal = debrisLength)
+        #cc["ccLengthNorm"] = normalizeCustomValues(np.log10(cc.ccLength), minVal = np.log10(cc.ccLength.min()), maxVal = debrisLength)
         #cc["ccMeanSlopeNorm"] = normalizeCustomValues(cc.ccMeanSlope, minVal = cc.ccMeanSlope.min(), maxVal = debrisSlope)
-        cc["ccLengthNorm"] = normalizeCustomValues(np.log(cc.ccLength), minVal = np.log(cc.ccLength.quantile(0.05)), maxVal = debrisLengthHigh)
+        cc["ccLengthNorm"] = normalizeCustomValues(np.log10(cc.ccLength), minVal = np.log10(cc.ccLength.quantile(0.05)), maxVal = debrisLengthHigh)
         cc["ccMeanSlopeNorm"] = normalizeCustomValues(cc.ccMeanSlope, minVal = cc.ccMeanSlope.quantile(0.05), maxVal = debrisSlopeHigh)
     
     else: # if DF sample data is present, use 5th percentile of these samples as a minmum Value
-        cc["ccLengthNorm"] = normalizeCustomValues(np.log(cc.ccLength), minVal = debrisLengthLow, maxVal = debrisLengthHigh)
+        cc["ccLengthNorm"] = normalizeCustomValues(np.log10(cc.ccLength), minVal = debrisLengthLow, maxVal = debrisLengthHigh)
         cc["ccMeanSlopeNorm"] = normalizeCustomValues(cc.ccMeanSlope, minVal = debrisSlopeLow, maxVal = debrisSlopeHigh)
     
     # plt.figure()
@@ -1192,12 +1166,16 @@ def assignDFSI(path, allCCName, debrisName ="", pixThr = 0.23, dSlopeThr = 0.2, 
     fig.colorbar(s)
     plt.show()
     
+    if writeCSV:
+        cc.to_csv(path+allCCName+"_ConnectedComponents_withDFSI_"+str(pixThr)+"_"+str(np.round(dSlopeThr,2))+"_"+str(bridge)+".csv", index = False)
+    
     return(pd.DataFrame({"ccID": cc.ccID, "DFSI":cc.DFSI, "ccLength": cc.ccLength}))
 
 #####################################################################################################################
 
 
 def backsorting(fname, path, dfsiValues, pixThr = 7, dSlopeThr = 0.2, bridge = 5, ext = ""):
+    #function to transfer assigned DFSI values to stream network 
     
     #load stream csv file
     flow = pd.read_csv(path+fname+"_ConnectedComponents_streams_"+str(pixThr)+"_"+str(np.round(dSlopeThr,2))+"_"+str(bridge)+ext+".csv")
@@ -1213,3 +1191,66 @@ def backsorting(fname, path, dfsiValues, pixThr = 7, dSlopeThr = 0.2, bridge = 5
     df.to_csv(path+fname+"_ConnectedComponents_streams_withDFSI_"+str(pixThr)+"_"+str(np.round(dSlopeThr,2))+"_"+str(bridge)+".csv", index = False)
     print("I have written "+fname+"_ConnectedComponents_streams_withDFSI_"+str(pixThr)+"_"+str(np.round(dSlopeThr,2))+"_"+str(bridge)+".csv")
 
+####################################################################################################################
+
+def compareDebrisFlowLengthAndSlope(fname, path = "./", pixThr = 7, bridge = 5, ext = "", thresholdRange = np.round(np.arange(0.05,0.31,0.01),2), writeCSV = False):
+    #function to compare weighted average and 5th percentile of CCs from debris-flow sample regions for different thresholds
+    
+    #make sure that thresholds are in ascending order
+    thresholdRange = np.sort(thresholdRange)
+    
+    #empty array to store data
+    data = np.zeros([len(thresholdRange),5]) 
+    #load CC datatsets for different thresholds
+    for ii, thr in enumerate(thresholdRange):
+        deb = pd.read_csv(path+fname+"_ConnectedComponents_"+str(pixThr)+"_"+str(thr)+"_"+str(bridge)+ext+".csv")
+        deb = deb.loc[deb['ccLength'] >0].reset_index(drop = True)
+
+        # logtransform and normalize data
+        deb["ccLengthNorm"] = normalize(np.log10(deb.ccLength))
+        deb["ccMeanSlopeNorm"] = normalize(deb.ccMeanSlope)
+
+        #calculateDensity
+        xy = np.vstack([deb.ccLengthNorm,deb.ccMeanSlopeNorm])
+        deb["Weight"]=normalizeStd(pd.Series(gaussian_kde(xy)(xy)))
+        
+        #get a weighted average DF slope and length
+        
+        debrisSlopeHigh = np.average(deb.ccMeanSlope, weights = deb.Weight)
+        debrisLengthHigh = np.average(np.log10(deb.ccLength), weights = deb.Weight)
+        
+        debrisSlopeLow = deb.ccMeanSlope.quantile(0.05)
+        debrisLengthLow = np.log10(deb.ccLength).quantile(0.05)
+        
+        #store in array
+        data[ii,0] = thr
+        data[ii,1] = debrisLengthLow
+        data[ii,2] = debrisLengthHigh
+        data[ii,3] = debrisSlopeLow
+        data[ii,4] = debrisSlopeHigh
+    
+    #plot
+    plt.figure()
+    plt.plot(data[:,0],data[:,4], label = "Weighted average debris-flow slope") 
+    plt.plot(data[:,0],data[:,3], label = "5th percentile debris-flow slope")
+    plt.legend()
+    plt.xlabel("Slope-change threshold [m/m]")
+    plt.ylabel("Slope [m/m]")
+    plt.title("Min and max slope values derived from debris-flow sample regions\nfor different thresholds")
+    plt.show()
+    
+    fig = plt.figure()
+    ax = fig.add_subplot()
+    #ax.set_yscale("log")
+    ax.plot(data[:,0],10**data[:,2], label = "Weighted average debris-flow component length") 
+    ax.plot(data[:,0],10**data[:,1], label = "5th percentile debris-flow component length")
+    plt.legend()
+    plt.xlabel("Slope-change threshold [m/m]")
+    plt.ylabel("Connected component length [m]")
+    plt.title("Min and max component length derived from debris-flow sample regions\nfor different thresholds")
+    plt.show()
+    
+    if writeCSV:
+        df = pd.DataFrame(data)
+        df.columns = ["dSlopeThreshold", "debrisLengthLow", "debrisLengthHigh", "debrisSlopeLow", "debrisSlopeHigh"]
+        df.to_csv(path+fname+"_minmax_DFslope_and_length.csv", index = False)
