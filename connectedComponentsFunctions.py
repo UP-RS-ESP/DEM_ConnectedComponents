@@ -666,15 +666,26 @@ def runCCAnalysis(fname, path, lsdttTable, pixThr = 7, dSlopeThr = 0.2, bridge =
 
     #loop over all basins in csv file and give each task to a different core
     #pass tasks
-    with concurrent.futures.ProcessPoolExecutor() as executor:
-        results = [executor.submit(processBasin, basin = basin , lsdttTable = lsdttTable.loc[lsdttTable.basin_key == basin].reset_index(drop = True), heads = heads, pixThr = pixThr, dSlopeThr = dSlopeThr, bridge = bridge, minCCLength = minCCLength) for basin in heads.basin_key.unique()]
-    
+    # with concurrent.futures.ProcessPoolExecutor() as executor:
+    #     results = [executor.submit(processBasin, basin = basin , lsdttTable = lsdttTable.loc[lsdttTable.basin_key == basin].reset_index(drop = True), heads = heads, pixThr = pixThr, dSlopeThr = dSlopeThr, bridge = bridge, minCCLength = minCCLength) for basin in heads.basin_key.unique()]
+   
+    #pass tasks with progress bar
+    l = len( heads.basin_key.unique())
+    with tqdm(total=l) as pbar:
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            futures = {executor.submit(processBasin, basin = basin , lsdttTable = lsdttTable.loc[lsdttTable.basin_key == basin].reset_index(drop = True), heads = heads, pixThr = pixThr, dSlopeThr = dSlopeThr, bridge = bridge, minCCLength = minCCLength): basin for basin in heads.basin_key.unique()}
+            results = {}
+            for future in concurrent.futures.as_completed(futures):
+                arg = futures[future]
+                results[arg] = future.result()
+                pbar.update(1)
     #combine results
     out = pd.DataFrame(columns = ["X","Y","StreamID","BasinID", "Elevation", "DrainageArea", "XYDistanceToNextPixel", "DownstreamDistance", "3DDistanceToNextPixel",  "Slope", "R2", "ksn", "FlowDistance_Catchment", "ccID", "segmentLocation", "dSlopeToPrevSegment"])
            
-    for task in concurrent.futures.as_completed(results):
+    for task in results:
+        #print(task)
         try:
-            out = pd.concat([out,task.result()])   
+            out = pd.concat([out,results[task]])   
         except ValueError:
             pass
     
@@ -865,13 +876,25 @@ def findDSlopeThresholdAlternative(lsdttTable,dist, pixThr = 7, sampleStreams = 
         heads = heads.sample(n = sampleStreams, random_state=123).reset_index(drop = True)
     
     #calculate slopes    
-    with concurrent.futures.ProcessPoolExecutor() as executor:
-        results = [executor.submit(processBasinWithoutCCs, basin = basin , lsdttTable = lsdttTable, heads = heads, pixThr = 7) for basin in heads.basin_key.unique()]
+    #with concurrent.futures.ProcessPoolExecutor() as executor:
+        #results = [executor.submit(processBasinWithoutCCs, basin = basin , lsdttTable = lsdttTable, heads = heads, pixThr = 7) for basin in heads.basin_key.unique()]
         #combine results
+        
+    #pass tasks with progress bar
+    l = len( heads.basin_key.unique())
+    with tqdm(total=l) as pbar:
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            futures = {executor.submit(processBasinWithoutCCs, basin = basin , lsdttTable = lsdttTable, heads = heads, pixThr = 7): basin for basin in heads.basin_key.unique()}
+            results = {}
+            for future in concurrent.futures.as_completed(futures):
+                arg = futures[future]
+                results[arg] = future.result()
+                pbar.update(1)
+    #combine results
     out = pd.DataFrame(columns = ["X","Y","StreamID","BasinID", "Elevation", "DrainageArea", "XYDistanceToNextPixel", "DownstreamDistance", "Slope", "R2", "SlopeChange"])
  
-    for task in concurrent.futures.as_completed(results):
-        out = pd.concat([out,task.result()]) 
+    for task in results:
+        out = pd.concat([out,results[task]]) 
    
     #turn dist into a list if the function was not given one
     thrs = []
@@ -1267,8 +1290,9 @@ def compareDebrisFlowLengthAndSlope(fname, path = "./", pixThr = 7, bridge = 5, 
         df.columns = ["dSlopeThreshold", "debrisLengthLow", "debrisLengthHigh", "debrisSlopeLow", "debrisSlopeHigh"]
         df.to_csv(path+fname+"_minmax_DFslope_and_length.csv", index = False)
 
-
+#########################################################################################################################
 def plotBasin(fname, path = "./", pixThr = 7, dSlopeThr = 0.2, bridge = 5, ext = "", basinIDs = -1, sampleBasins = 1, colorBy = "DFSI"):
+    #function to get a quick profile view of the assigned DFSI
     
     #read stream network with assigned DFSI
     dat = pd.read_csv(path+fname+"_ConnectedComponents_streams_withDFSI_"+str(pixThr)+"_"+str(np.round(dSlopeThr,2))+"_"+str(bridge)+".csv")
@@ -1282,14 +1306,19 @@ def plotBasin(fname, path = "./", pixThr = 7, dSlopeThr = 0.2, bridge = 5, ext =
     elif(sampleBasins > 0):
         print("Plotting "+str(sampleBasins)+ " random basin(s)...")
         basinIDs = np.random.choice(dat.BasinID.unique(),sampleBasins,replace=False)
-        
+    
+    #define colorbars used for different parameters 
+    if (colorBy == "DFSI" or colorBy == "dSlopeToPrevSegment"):
+        colors = "coolwarm"
+    else: 
+        colors = "viridis"
     for b in basinIDs:
         basin = dat.loc[dat.BasinID == b]
         #in case the basins were cut by a polygon, the minimum flow distance might not be 0
         #so the min Flowdistance is subtracted to set the outlet to 0
         basin.FlowDistance_Catchment = basin.FlowDistance_Catchment - basin.FlowDistance_Catchment.min()
         plt.figure()
-        plt.scatter(basin.FlowDistance_Catchment, basin.Elevation, c = basin[colorBy], s = 1, cmap = "coolwarm")
+        plt.scatter(basin.FlowDistance_Catchment, basin.Elevation, c = basin[colorBy], s = 1, cmap = colors)
         cbar = plt.colorbar()
         cbar.set_label(colorBy)
         if colorBy == "DFSI":
