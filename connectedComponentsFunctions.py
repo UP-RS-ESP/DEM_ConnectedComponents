@@ -91,7 +91,7 @@ def normalize(x):
 
 #####################################################################################################################
 
-def normalizeStd(x, plow = 5, phigh = 95):
+def normalizePerc(x, plow = 5, phigh = 95):
     #just a min max scaler using percentiles instead of min and max values. Values above 1 will be assigned one and 
     #values below 0 will be set to 0
     scaled = (x-np.nanpercentile(x, plow))/(np.nanpercentile(x, phigh)-np.nanpercentile(x, plow))
@@ -681,12 +681,12 @@ def runCCAnalysis(fname, path, lsdttTable, pixThr = 7, dSlopeThr = 0.2, bridge =
     out = out.reset_index(drop = True)
     #now get statistics per CC
     cc = out.groupby('ccID').agg({'3DDistanceToNextPixel': 'sum', 'Slope':  ['mean', 'std'], 'DrainageArea': ['min', 'max'], 
-                                   'segmentLocation': 'max', "dSlopeToPrevSegment":["max"]})
+                                   'segmentLocation': 'max', "dSlopeToPrevSegment":["max"], 'ksn':["mean"]})
 
     #rename columns
     cc = cc.reset_index()
     cc.columns = ["_".join(x) for x in cc.columns.ravel()]
-    cc.columns = ['ccID', 'ccLength', 'ccMeanSlope', 'ccStdSlope', 'minDrainageArea', 'maxDrainageArea','segmentLocation', 'slopeChangeToPrevCC']
+    cc.columns = ['ccID', 'ccLength', 'ccMeanSlope', 'ccStdSlope', 'minDrainageArea', 'maxDrainageArea','segmentLocation', 'slopeChangeToPrevCC', 'meanKSN']
     
     #remove individual small streams that are shorter than the minmal required CC length 
     shortStreams = out.groupby("ccID").Slope.count().reset_index()
@@ -1085,7 +1085,7 @@ def componentClustering(path, allCCName, debrisName ="", pixThr = 0.23, dSlopeTh
     ax.set_xlabel("Mean CC Length [m]")
     ax.set_ylabel("Mean CC Slope [m/m]")
     ax.set_ylim(0,1.5)
-    ax.set_title("Assigned DFSI")
+    ax.set_title("Assigned cluster for a slope-change threshold of "+ str(dSlopeThr))
     fig.colorbar(s)
     plt.show()
     
@@ -1094,11 +1094,12 @@ def componentClustering(path, allCCName, debrisName ="", pixThr = 0.23, dSlopeTh
     #compute pairwise correlation
     corrmat = scaled.corr()
     
-    #plot heatmap
-    plt.figure(figsize=(12,15))
-    plt.title("Pearson correlation of clustering parameters")
-    sns.heatmap(corrmat,annot=True,cmap="coolwarm")
-    plt.show()
+    #plot heatmap (only if there are more than one clustering parameter)
+    if len(clusterParameters > 1):
+        plt.figure(figsize=(12,15))
+        plt.title("Pearson correlation of clustering parameters")
+        sns.heatmap(corrmat,annot=True,cmap="coolwarm")
+        plt.show()
 
     return(pd.DataFrame({"ccID": cc.ccID, "Cluster":cc.clusterKM, "ccLength": cc.ccLength}))
 
@@ -1125,7 +1126,7 @@ def assignDFSI(path, allCCName, debrisName ="", pixThr = 0.23, dSlopeThr = 0.2, 
 
         #calculateDensity
         xy = np.vstack([deb.ccLengthNorm,deb.ccMeanSlopeNorm])
-        deb["Weight"]=normalizeStd(pd.Series(gaussian_kde(xy)(xy)))
+        deb["Weight"]=normalizePerc(pd.Series(gaussian_kde(xy)(xy)))
         
         #get a weighted average DF slope and length
         
@@ -1162,7 +1163,7 @@ def assignDFSI(path, allCCName, debrisName ="", pixThr = 0.23, dSlopeThr = 0.2, 
     ax.set_xlabel("Mean CC Length [m]")
     ax.set_ylabel("Mean CC Slope [m/m]")
     ax.set_ylim(0,1.5)
-    ax.set_title("Assigned DFSI")
+    ax.set_title("Assigned DFSI for a slope-change threshold of "+ str(dSlopeThr))
     fig.colorbar(s)
     plt.show()
     
@@ -1186,8 +1187,19 @@ def backsorting(fname, path, dfsiValues, pixThr = 7, dSlopeThr = 0.2, bridge = 5
     #drop nodes with the same X and Y coordinates and keep the one that shows the highest DFSI
     df = merge.sort_values('DFSI', ascending=False).drop_duplicates(['X','Y'])
     df = df.reset_index()
-    df = df.drop(columns = ["XYDistanceToNextPixel", "3DDistanceToNextPixel"])
+    df = df.drop(columns = ["XYDistanceToNextPixel", "3DDistanceToNextPixel"])#
+    
+    # #claculate normalised ratio between DFSI and ksn
+    # df.ksn = normalizePerc(df.ksn)
+    # df["DFSI_ksn_ratio"] = (df.ksn - df.DFSI)/(df.ksn + df.DFSI)
+    # plt.figure()
+    # sns.kdeplot(df.DFSI_ksn_ratio, linewidth = 2)
+    # #sns.kdeplot(normalizePerc(df.ksn), linewidth = 2)
+    # plt.title("Density distribution of summed distances to debris-flow samples")
+    # plt.xlabel("Sum of distances")
+    # plt.show()
     #save to file
+    #df["self-calculatedKSN"] = df.Slope/(df.DrainageArea**0.4)
     df.to_csv(path+fname+"_ConnectedComponents_streams_withDFSI_"+str(pixThr)+"_"+str(np.round(dSlopeThr,2))+"_"+str(bridge)+".csv", index = False)
     print("I have written "+fname+"_ConnectedComponents_streams_withDFSI_"+str(pixThr)+"_"+str(np.round(dSlopeThr,2))+"_"+str(bridge)+".csv")
 
@@ -1212,7 +1224,7 @@ def compareDebrisFlowLengthAndSlope(fname, path = "./", pixThr = 7, bridge = 5, 
 
         #calculateDensity
         xy = np.vstack([deb.ccLengthNorm,deb.ccMeanSlopeNorm])
-        deb["Weight"]=normalizeStd(pd.Series(gaussian_kde(xy)(xy)))
+        deb["Weight"]=normalizePerc(pd.Series(gaussian_kde(xy)(xy)))
         
         #get a weighted average DF slope and length
         
@@ -1254,3 +1266,40 @@ def compareDebrisFlowLengthAndSlope(fname, path = "./", pixThr = 7, bridge = 5, 
         df = pd.DataFrame(data)
         df.columns = ["dSlopeThreshold", "debrisLengthLow", "debrisLengthHigh", "debrisSlopeLow", "debrisSlopeHigh"]
         df.to_csv(path+fname+"_minmax_DFslope_and_length.csv", index = False)
+
+
+def plotBasin(fname, path = "./", pixThr = 7, dSlopeThr = 0.2, bridge = 5, ext = "", basinIDs = -1, sampleBasins = 1, colorBy = "DFSI"):
+    
+    #read stream network with assigned DFSI
+    dat = pd.read_csv(path+fname+"_ConnectedComponents_streams_withDFSI_"+str(pixThr)+"_"+str(np.round(dSlopeThr,2))+"_"+str(bridge)+".csv")
+    dat.dSlopeToPrevSegment = dat.dSlopeToPrevSegment.fillna(0)
+    #generate list of pre-defined basins or randomly sample
+    if basinIDs != -1 :
+        print("Plotting basin(s) "+str(basinIDs), "...")
+        if not isinstance(basinIDs, list):
+            basinIDs = [basinIDs]
+                
+    elif(sampleBasins > 0):
+        print("Plotting "+str(sampleBasins)+ " random basin(s)...")
+        basinIDs = np.random.choice(dat.BasinID.unique(),sampleBasins,replace=False)
+        
+    for b in basinIDs:
+        basin = dat.loc[dat.BasinID == b]
+        #in case the basins were cut by a polygon, the minimum flow distance might not be 0
+        #so the min Flowdistance is subtracted to set the outlet to 0
+        basin.FlowDistance_Catchment = basin.FlowDistance_Catchment - basin.FlowDistance_Catchment.min()
+        plt.figure()
+        plt.scatter(basin.FlowDistance_Catchment, basin.Elevation, c = basin[colorBy], s = 1, cmap = "coolwarm")
+        cbar = plt.colorbar()
+        cbar.set_label(colorBy)
+        if colorBy == "DFSI":
+            plt.clim(-1,1)
+        elif colorBy == "dSlopeToPrevSegment":
+            minV = basin.dSlopeToPrevSegment.min()
+            maxV = basin.dSlopeToPrevSegment.max()
+            limV = max(abs(minV), maxV)
+            plt.clim(-limV,limV)
+        plt.xlabel("Downstream distance [m]")
+        plt.title("Basin"+ str(b))
+        plt.ylabel("Elevation [m]")
+        plt.show()
