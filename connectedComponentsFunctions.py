@@ -26,14 +26,9 @@ pd.set_option('mode.chained_assignment', None)
 
 #####################################################################################################################
 
-def getLSDTTFlowlines(fname,path, lsdttPath = "~/LSDTopoTools/LSDTopoTools2/LSDTopoTools/LSDTopoTools2/bin/", minContributingPixels = 1000, maxBasinSize = 11111111,findCompleteBasins = "true", testBoundaries = "true", m_over_n = 0.45):
+def printLSDTTDriver(fname, path, minContributingPixels = 1000, maxBasinSize = int(1e07),findCompleteBasins = "true", testBoundaries = "true", m_over_n = 0.45):
     #this function converts the input geotiff to ENVI format, creates a driver file and runs lsdtt-chi mapping to extract channels
    
-    #change geotiff to bil format for lsdtt
-    
-    print("Converting GeoTIFF ton ENVI format...")
-    os.system("gdal_translate -of ENVI "+path+fname+".tif "+path+fname+".bil")
-    
     #create driver file for lsdtt
     try: 
         os.remove(path+fname+".driver")
@@ -79,9 +74,6 @@ skip: 2
     sys.stdout.close()
     sys.stdout = stdoutOrigin
     
-    #run chi-mapping from lsdtt
-    print("Executing lsdtt-chi-mapping...")
-    os.system(lsdttPath+"lsdtt-chi-mapping "+fname+".driver")
 
 #####################################################################################################################
 
@@ -1103,7 +1095,7 @@ def componentClustering(path, allCCName, debrisName ="", pixThr = 0.23, dSlopeTh
     #plot results 
     fig = plt.figure()
     ax = fig.add_subplot()
-    s = ax.scatter(cc.ccLength, cc.ccMeanSlope, s=5, c = cc.clusterKM, cmap = "coolwarm")
+    s = ax.scatter(cc.ccLength, cc.ccMeanSlope, s=5, c = cc.clusterKM, cmap = "Spectral")
     ax.set_xscale('log')
     ax.set_xlabel("Mean CC Length [m]")
     ax.set_ylabel("Mean CC Slope [m/m]")
@@ -1118,7 +1110,7 @@ def componentClustering(path, allCCName, debrisName ="", pixThr = 0.23, dSlopeTh
     corrmat = scaled.corr()
     
     #plot heatmap (only if there are more than one clustering parameter)
-    if len(clusterParameters > 1):
+    if len(clusterParameters)>1:
         plt.figure(figsize=(12,15))
         plt.title("Pearson correlation of clustering parameters")
         sns.heatmap(corrmat,annot=True,cmap="coolwarm")
@@ -1223,6 +1215,7 @@ def backsorting(fname, path, dfsiValues, pixThr = 7, dSlopeThr = 0.2, bridge = 5
     # plt.show()
     #save to file
     #df["self-calculatedKSN"] = df.Slope/(df.DrainageArea**0.4)
+    
     df.to_csv(path+fname+"_ConnectedComponents_streams_withDFSI_"+str(pixThr)+"_"+str(np.round(dSlopeThr,2))+"_"+str(bridge)+".csv", index = False)
     print("I have written "+fname+"_ConnectedComponents_streams_withDFSI_"+str(pixThr)+"_"+str(np.round(dSlopeThr,2))+"_"+str(bridge)+".csv")
 
