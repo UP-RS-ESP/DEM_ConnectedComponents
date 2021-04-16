@@ -1,0 +1,21 @@
+Metadata-Version: 2.1
+Name: connectedComponents
+Version: 0.1
+Summary: DEM Connected Component calculation for debris-flow detection
+Home-page: https://github.com/UP-RS-ESP/DEM_ConnectedComponents
+Author: Ariane Mueting
+Author-email: mueting@uni-potsdam.de
+License: UNKNOWN
+Project-URL: Bug Tracker, https://github.com/UP-RS-ESP/DEM_ConnectedComponents/issues
+Description: # DEM_ConnectedComponents
+        Connected Components (CC) from longitudinal river profiles for debris flow mapping.
+        
+        
+        Mueting, A., Bookhagen, B., and Strecker, M.R.: Identifying debris flows using high-resolution topographic data: A case study in the Quebrada del Toro, NW Argentina
+        
+Platform: UNKNOWN
+Classifier: Programming Language :: Python :: 3
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Operating System :: OS Independent
+Requires-Python: >=3.6
+Description-Content-Type: text/markdown

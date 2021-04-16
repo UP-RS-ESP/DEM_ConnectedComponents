@@ -1,0 +1,7 @@
+README.md
+setup.cfg
+setup.py
+src/connectedComponents.egg-info/PKG-INFO
+src/connectedComponents.egg-info/SOURCES.txt
+src/connectedComponents.egg-info/dependency_links.txt
+src/connectedComponents.egg-info/top_level.txt
