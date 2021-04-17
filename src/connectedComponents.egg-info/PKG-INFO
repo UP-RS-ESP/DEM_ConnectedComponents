@@ -4,18 +4,29 @@ Version: 0.1
 Summary: DEM Connected Component calculation for debris-flow detection
 Home-page: https://github.com/UP-RS-ESP/DEM_ConnectedComponents
 Author: Ariane Mueting
-Author-email: mueting@uni-potsdam.de
+Author-email: Ariane Mueting
 License: UNKNOWN
-Project-URL: Bug Tracker, https://github.com/UP-RS-ESP/DEM_ConnectedComponents/issues
+Download-URL: https://github.com/UP-RS-ESP/DEM_ConnectedComponents
+Project-URL: Bug Reports, https://github.com/UP-RS-ESP/DEM_ConnectedComponents/issues
+Project-URL: Documentation, https://github.com/UP-RS-ESP/DEM_ConnectedComponents/examples
+Project-URL: Source, https://github.com/UP-RS-ESP/DEM_ConnectedComponents/
 Description: # DEM_ConnectedComponents
         Connected Components (CC) from longitudinal river profiles for debris flow mapping.
         
         
         Mueting, A., Bookhagen, B., and Strecker, M.R.: Identifying debris flows using high-resolution topographic data: A case study in the Quebrada del Toro, NW Argentina
         
+Keywords: DEM,ConnectedComponents,river networks,debris flow,drainage area,natural hazard,geology,geomorphology,high resolution DEM,remote sensing
 Platform: UNKNOWN
-Classifier: Programming Language :: Python :: 3
-Classifier: License :: OSI Approved :: MIT License
+Classifier: Development Status :: 4 - Beta
+Classifier: Intended Audience :: Science/Research
+Classifier: Topic :: Scientific/Engineering
+Classifier: License :: OSI Approved :: GNU General Public License v3 (GPLv3)
 Classifier: Operating System :: OS Independent
+Classifier: Programming Language :: Python
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.6
+Classifier: Programming Language :: Python :: 3.7
+Classifier: Programming Language :: Python :: 3.8
 Requires-Python: >=3.6
 Description-Content-Type: text/markdown
