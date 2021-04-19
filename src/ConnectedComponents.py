@@ -300,7 +300,7 @@ def processBasin(basin, lsdttTable, heads, pixThr, dSlopeThr, bridge, minCCLengt
 
                             #calculate slope change with regard to previous CC
                             try:
-                                data[np.where(data[:,9]==ccID),11]= previousSlps[-1]-mean
+                                data[np.where(data[:,9]==ccID),11]= mean-previousSlps[-1]
                             except IndexError: #if list previousSlps is empty, it will raise an index error
                                 pass
 
@@ -384,7 +384,7 @@ def processBasin(basin, lsdttTable, heads, pixThr, dSlopeThr, bridge, minCCLengt
                                     #if the stream ends naturally, the CC needs to be terminated as well (only thing missing is calculating the dPrevSLp)
                                     if(k == j):
                                         try:
-                                            data[np.where(data[:,9]==ccID),11]= previousSlps[-1]-mean
+                                            data[np.where(data[:,9]==ccID),11]= mean-previousSlps[-1]
                                         except IndexError: #if list previousSlps is empty, it will result in an index error
                                             pass
 
@@ -392,7 +392,7 @@ def processBasin(basin, lsdttTable, heads, pixThr, dSlopeThr, bridge, minCCLengt
                                 else: #terminate segment
                                     #calculate slope change with regard to previous CC
                                     try:
-                                        data[np.where(data[:,9]==ccID),11]= previousSlps[-1]-mean
+                                        data[np.where(data[:,9]==ccID),11]= mean-previousSlps[-1]
                                     except IndexError: #if list previousSlps is empty, it will result in an index error -> except
                                         pass
                                     ccID+=1 #increase CCID
@@ -435,7 +435,7 @@ def processBasin(basin, lsdttTable, heads, pixThr, dSlopeThr, bridge, minCCLengt
                                     #if the stream ends naturally, the CC needs to be terminated as well (only thing missing is calculating the dPrevSLp)
                                     if(k == j):
                                         try:
-                                            data[np.where(data[:,9]==ccID),11]= previousSlps[-1]-mean
+                                            data[np.where(data[:,9]==ccID),11]= mean-previousSlps[-1]
                                         except IndexError: #if list previousSlps is empty, it will result in an index error
                                             pass
 
@@ -449,7 +449,7 @@ def processBasin(basin, lsdttTable, heads, pixThr, dSlopeThr, bridge, minCCLengt
                                 else: #terminate segment
                                     #calculate slope change with regard to previous CC
                                     try:
-                                        data[np.where(data[:,9]==ccID),11]= previousSlps[-1]-mean
+                                        data[np.where(data[:,9]==ccID),11]= mean-previousSlps[-1]
                                     except IndexError: #if list previousSlps is empty, it will result in an index error -> except
                                         pass
                                     ccID+=1 #increase CCID
@@ -1207,18 +1207,6 @@ def backsorting(fname, path, dfsiValues, pixThr = 7, dSlopeThr = 0.2, bridge = 5
     df = merge.sort_values('DFSI', ascending=False).drop_duplicates(['X','Y'])
     df = df.reset_index()
     df = df.drop(columns = ["XYDistanceToNextPixel", "3DDistanceToNextPixel"])#
-
-    # #claculate normalised ratio between DFSI and ksn
-    # df.ksn = normalizePerc(df.ksn)
-    # df["DFSI_ksn_ratio"] = (df.ksn - df.DFSI)/(df.ksn + df.DFSI)
-    # plt.figure(figsize=(11.69,8.27))
-    # sns.kdeplot(df.DFSI_ksn_ratio, linewidth = 2)
-    # #sns.kdeplot(normalizePerc(df.ksn), linewidth = 2)
-    # plt.title("Density distribution of summed distances to debris-flow samples")
-    # plt.xlabel("Sum of distances")
-    # plt.show()
-    #save to file
-    #df["self-calculatedKSN"] = df.Slope/(df.DrainageArea**0.4)
 
     df.to_csv(path+fname+"_ConnectedComponents_streams_withDFSI_"+str(pixThr)+"_"+str(np.round(dSlopeThr,2))+"_"+str(bridge)+".csv", index = False)
     print("The file "+fname+"_ConnectedComponents_streams_withDFSI_"+str(pixThr)+"_"+str(np.round(dSlopeThr,2))+"_"+str(bridge)+".csv was written.")
