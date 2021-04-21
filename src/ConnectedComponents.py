@@ -82,15 +82,6 @@ def normalize(x):
     #just a min max scaler - always useful
     return(x-np.nanmin(x))/(np.nanmax(x)-np.nanmin(x))
 
-#####################################################################################################################
-
-def normalizePerc(x, plow = 5, phigh = 95):
-    #just a min max scaler using percentiles instead of min and max values. Values above 1 will be assigned one and
-    #values below 0 will be set to 0
-    scaled = (x-np.nanpercentile(x, plow))/(np.nanpercentile(x, phigh)-np.nanpercentile(x, plow))
-    scaled.loc[scaled>1]=1
-    scaled.loc[scaled<0]=0
-    return(scaled)
 
 #####################################################################################################################
 
@@ -1144,7 +1135,7 @@ def assignDFSI(path, allCCName, debrisName ="", pixThr = 0.23, dSlopeThr = 0.2, 
 
         #calculateDensity
         xy = np.vstack([deb.ccLengthNorm,deb.ccMeanSlopeNorm])
-        deb["Weight"]=normalizePerc(pd.Series(gaussian_kde(xy)(xy)))
+        deb["Weight"]=normalize(pd.Series(gaussian_kde(xy)(xy)))
 
         #get a weighted average DF slope and length
 
@@ -1232,7 +1223,7 @@ def compareDebrisFlowLengthAndSlope(fname, path = "./", pixThr = 7, bridge = 5, 
 
         #calculateDensity
         xy = np.vstack([deb.ccLengthNorm,deb.ccMeanSlopeNorm])
-        deb["Weight"]=normalizePerc(pd.Series(gaussian_kde(xy)(xy)))
+        deb["Weight"]=normalize(pd.Series(gaussian_kde(xy)(xy)))
 
         #get a weighted average DF slope and length
 
