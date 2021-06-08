@@ -86,7 +86,7 @@ def normalize(x):
 #####################################################################################################################
 
 def normalizeCustomValues(x, minVal, maxVal):
-    #just a min max scaler using percentiles instead of min and max values. Values above 1 will be assigned one and
+    #a min max scaler using percentiles instead of min and max values. Values above 1 will be assigned one and
     #values below 0 will be set to 0
     scaled = (x-minVal)/(maxVal-minVal)
     scaled.loc[scaled>1]=1
@@ -624,7 +624,7 @@ def processBasinWithoutCCs(basin, lsdttTable, heads, pixThr):
 
 #####################################################################################################################
 
-def runCCAnalysis(fname, path, lsdttTable, pixThr = 7, dSlopeThr = 0.2, bridge = 5, minCCLength = 2, mask = "", epsg = 4326):
+def runCCAnalysis(fname, path, lsdttTable, pixThr = 7, dSlopeThr = 0.21, bridge = 5, minCCLength = 2, mask = "", epsg = 4326):
     #function to execute the processBasin function by passing different tasks to different cores
 
     #get all nodes that are NOT in reciever nodes as channel heads
@@ -729,7 +729,7 @@ def getCatchmentsInAOI(fname, path, mask, epsg = 4326):
 
 #####################################################################################################################
 
-def getCCsInAOI(fname, path, mask, epsg = 32719, pixThr= 7, dSlopeThr = 0.25, bridge = 5):
+def getCCsInAOI(fname, path, mask, epsg = 32719, pixThr= 7, dSlopeThr = 0.21, bridge = 5):
     #function to retrieve CCs within Area of interest
 
     #load CC streams
@@ -1000,7 +1000,7 @@ def findPixelThreshold(lsdttTable, thresholdRange = np.arange(1,26), sampleBasin
 
 #####################################################################################################################
 
-def componentClustering(path, allCCName, debrisName ="", pixThr = 0.23, dSlopeThr = 0.2, bridge = 5, allExt = "", debExt = "", k = 2, clusterParameters = ["ccLength", "ccMeanSlope", "segmentLocation", "slopeChangeToPrevCC", "distDFSamples"]):
+def componentClustering(path, allCCName, debrisName ="", pixThr = 7, dSlopeThr = 0.21, bridge = 5, allExt = "", debExt = "", k = 2, clusterParameters = ["ccLength", "ccMeanSlope", "segmentLocation", "slopeChangeToPrevCC", "distDFSamples"]):
 
     #load all CCs
     cc =  pd.read_csv(path+allCCName+"_ConnectedComponents_"+str(pixThr)+"_"+str(np.round(dSlopeThr,2))+"_"+str(bridge)+allExt+".csv")
@@ -1113,7 +1113,7 @@ def componentClustering(path, allCCName, debrisName ="", pixThr = 0.23, dSlopeTh
     return(pd.DataFrame({"ccID": cc.ccID, "Cluster":cc.clusterKM, "ccLength": cc.ccLength}))
 
 #####################################################################################################################
-def assignDFSI(path, allCCName, debrisName ="", pixThr = 0.23, dSlopeThr = 0.2, bridge = 5, allExt = "", debExt = "", debrisSlopeHigh = 0.6, debrisLengthHigh= np.log10(500), writeCSV = False):
+def assignDFSI(path, allCCName, debrisName ="", pixThr = 7, dSlopeThr = 0.21, bridge = 5, l = 0.5, s = 0.5, allExt = "", debExt = "", debrisSlopeHigh = 0.6, debrisLengthHigh= np.log10(500), writeCSV = False):
 
     #load all CCs
     cc =  pd.read_csv(path+allCCName+"_ConnectedComponents_"+str(pixThr)+"_"+str(np.round(dSlopeThr,2))+"_"+str(bridge)+allExt+".csv")
@@ -1163,7 +1163,7 @@ def assignDFSI(path, allCCName, debrisName ="", pixThr = 0.23, dSlopeThr = 0.2, 
     # plt.xlabel("Sum of distances")
     # plt.show()
 
-    cc["DFSI"] = cc.ccLengthNorm+cc.ccMeanSlopeNorm-1 #substract 1 to scale between -1 and 1
+    cc["DFSI"] = cc.ccLengthNorm*l+cc.ccMeanSlopeNorm*s #substract 1 to scale between -1 and 1
     #plot results
     fig = plt.figure(figsize=(11.69,8.27))
     ax = fig.add_subplot()
@@ -1185,7 +1185,7 @@ def assignDFSI(path, allCCName, debrisName ="", pixThr = 0.23, dSlopeThr = 0.2, 
 #####################################################################################################################
 
 
-def backsorting(fname, path, dfsiValues, pixThr = 7, dSlopeThr = 0.2, bridge = 5, ext = ""):
+def backsorting(fname, path, dfsiValues, pixThr = 7, dSlopeThr = 0.21, bridge = 5, ext = ""):
     #function to transfer assigned DFSI values to stream network
 
     #load stream csv file
@@ -1267,7 +1267,7 @@ def compareDebrisFlowLengthAndSlope(fname, path = "./", pixThr = 7, bridge = 5, 
         df.to_csv(path+fname+"_minmax_DFslope_and_length.csv", index = False)
 
 #########################################################################################################################
-def plotBasin(fname, path = "./", pixThr = 7, dSlopeThr = 0.2, bridge = 5, ext = "", basinIDs = -1, sampleBasins = 1, colorBy = "DFSI"):
+def plotBasin(fname, path = "./", pixThr = 7, dSlopeThr = 0.21, bridge = 5, ext = "", basinIDs = -1, sampleBasins = 1, colorBy = "DFSI"):
     #function to get a quick profile view of the assigned DFSI
 
     #read stream network with assigned DFSI
