@@ -13,6 +13,7 @@ Project-URL: Source, https://github.com/UP-RS-ESP/DEM_ConnectedComponents/
 Description: # DEM_ConnectedComponents
         Connected Components (CC) from longitudinal river profiles for debris flow mapping.
         
+        This research and the code are associated with Mueting et al. (in review). Please cite this study when using the code.
         
         Mueting, A., Bookhagen, B., and Strecker, M.R.: Identifying debris flows using high-resolution topographic data: A case study in the Quebrada del Toro, NW Argentina
         

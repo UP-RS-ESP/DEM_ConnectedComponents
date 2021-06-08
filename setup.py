@@ -17,7 +17,7 @@ def do_setup():
         long_description_content_type="text/markdown",
         url="https://github.com/UP-RS-ESP/DEM_ConnectedComponents",
         author="Ariane Mueting",
-        author_email="Ariane Mueting",
+        author_email="mueting@uni-potsdam.de",
 
         classifiers=[
             "Development Status :: 4 - Beta",
