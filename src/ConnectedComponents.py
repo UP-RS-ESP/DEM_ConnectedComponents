@@ -1113,7 +1113,7 @@ def componentClustering(path, allCCName, debrisName ="", pixThr = 7, dSlopeThr =
     return(pd.DataFrame({"ccID": cc.ccID, "Cluster":cc.clusterKM, "ccLength": cc.ccLength}))
 
 #####################################################################################################################
-def assignDFSI(path, allCCName, debrisName ="", pixThr = 7, dSlopeThr = 0.21, bridge = 5, l = 0.5, s = 0.5, allExt = "", debExt = "", debrisSlopeHigh = 0.6, debrisLengthHigh= np.log10(500), writeCSV = False):
+def assignDFSI(path, allCCName, debrisName ="", pixThr = 7, dSlopeThr = 0.21, bridge = 5, l = 1, s = 1, allExt = "", debExt = "", debrisSlopeHigh = 0.6, debrisLengthHigh= np.log10(500), writeCSV = False):
 
     #load all CCs
     cc =  pd.read_csv(path+allCCName+"_ConnectedComponents_"+str(pixThr)+"_"+str(np.round(dSlopeThr,2))+"_"+str(bridge)+allExt+".csv")
@@ -1163,7 +1163,7 @@ def assignDFSI(path, allCCName, debrisName ="", pixThr = 7, dSlopeThr = 0.21, br
     # plt.xlabel("Sum of distances")
     # plt.show()
 
-    cc["DFSI"] = cc.ccLengthNorm*l+cc.ccMeanSlopeNorm*s #substract 1 to scale between -1 and 1
+    cc["DFSI"] = (cc.ccLengthNorm*l+cc.ccMeanSlopeNorm*s)-1 #substract 1 to scale between -1 and 1
     #plot results
     fig = plt.figure(figsize=(11.69,8.27))
     ax = fig.add_subplot()
