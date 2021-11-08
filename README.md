@@ -1,9 +1,9 @@
 # DEM_ConnectedComponents
-Connected Components (CC) from longitudinal river profiles for debris flow mapping.
+Connected Components (CC) from longitudinal river profiles for mapping of debris-flow channels.
 
-This research and the code are associated with Mueting et al. (in review). Please cite this study when using the code.
+This research and the code are associated with Mueting et al. (in press). Please cite this study when using the code.
 
-Mueting, A., Bookhagen, B., and Strecker, M.R.: Identifying debris flows using high-resolution topographic data: A case study in the Quebrada del Toro, NW Argentina
+Mueting, A., Bookhagen, B., and Strecker, M.R.: Identifying debris-flow channels using high-resolution topographic data: A case study in the Quebrada del Toro, NW Argentina
 
 # Installation and Processing
 A detailed step-by-step processing in Jupyter Notebook format is described in the example directory. In short, you will need to install an environment containing the required python packages:
@@ -28,4 +28,4 @@ sh LSDTT_native_linux_setup.sh
 export PATH=$PATH:~/LSDTopoTools/LSDTopoTools2/bin
 ```
 
-Now you can start using the ConnectedComponent package - see the example folder and Jupyter Notebook for a walk through on an example dataset (3m).
+Now you can start using the ConnectedComponent package - see the example folder and Jupyter Notebook for a walk through on an example dataset (3 m).
